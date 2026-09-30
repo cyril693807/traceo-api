@@ -1,0 +1,7 @@
+fastapi==0.141.1
+uvicorn[standard]==0.53.0
+networkx==3.6.1
+shapely==2.1.2
+gpxpy==1.6.2
+numpy==2.4.4
+requests==2.33.1
