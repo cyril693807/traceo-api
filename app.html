@@ -567,7 +567,7 @@
     statusLine.textContent = "Calcul du parcours sur les routes réelles... Le premier calcul peut prendre jusqu'à une minute (serveur gratuit en veille).";
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 100000);
+    const timeoutId = setTimeout(() => controller.abort(), 170000);
     try {
       const url = `${API_BASE_URL}/generate?lat=${state.center.lat}&lon=${state.center.lon}` +
         `&shape=${encodeURIComponent(state.shape)}&length_km=${state.lengthKm}` +
