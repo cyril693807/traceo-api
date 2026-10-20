@@ -72,6 +72,20 @@ def diagnostic():
     return {"serveurs_openstreetmap": diagnose_overpass()}
 
 
+@app.get("/graph", include_in_schema=False)
+def graph_dump(lat: float, lon: float, radius_m: int = Query(3500, ge=500, le=6000), profile: str = "route"):
+    """Export compact du réseau routier (pour tester l'algorithme hors ligne)."""
+    try:
+        G = fetch_osm_graph(lat, lon, radius_m, profile)
+    except RoadDataUnavailable as e:
+        raise HTTPException(503, str(e))
+    ids = {n: i for i, n in enumerate(G.nodes)}
+    return {
+        "nodes": [[round(G.nodes[n]["y"], 6), round(G.nodes[n]["x"], 6)] for n in G.nodes],
+        "edges": [[ids[u], ids[v], round(d["length"], 1), d.get("mult", 1.0)] for u, v, d in G.edges(data=True)],
+    }
+
+
 @app.get("/generate")
 def generate(
     lat: float = Query(..., ge=-90, le=90, description="Latitude du centre"),
