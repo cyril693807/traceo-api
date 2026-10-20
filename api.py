@@ -107,8 +107,8 @@ def generate(
     for n in route:
         seg.points.append(gpxpy.gpx.GPXTrackPoint(G.nodes[n]["y"], G.nodes[n]["x"]))
 
-    logger.info("shape=%s profile=%s qualité=%s écart=%.0fm couverture=%.0f%% %.1fkm",
-                shape, profile, m["quality"], m["mean_dev_m"], m["coverage_pct"], m["route_km"])
+    logger.info("shape=%s profile=%s qualité=%s écart=%.0fm couverture=%.0f%% %.1fkm | détail=%s | réseau utilisé=%d nœuds",
+                shape, profile, m["quality"], m["mean_dev_m"], m["coverage_pct"], m["route_km"], m, G.number_of_nodes())
     return Response(
         content=gpx.to_xml(),
         media_type="application/gpx+xml",

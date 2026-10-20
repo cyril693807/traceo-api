@@ -132,6 +132,10 @@ def build_overpass_query(south, west, north, east, profile="route", timeout=30):
 
 
 def _graph_from_overpass(data):
+    remark = data.get("remark", "")
+    if "runtime error" in remark.lower() or "timed out" in remark.lower():
+        # Réponse tronquée : un réseau incomplet donnerait un parcours faux.
+        raise RoadDataUnavailable("Réponse OpenStreetMap incomplète : " + remark[:120])
     coords = {}
     ways = []
     for el in data.get("elements", []):
@@ -170,7 +174,16 @@ def _graph_from_overpass(data):
     if G.number_of_nodes() < 30:
         raise RouteError("Presque aucune route utilisable autour de ce point pour ce profil.")
 
-    biggest = max(nx.connected_components(G), key=len)
+    comps = sorted(nx.connected_components(G), key=len, reverse=True)
+    biggest = comps[0]
+    lats = [G.nodes[n]["y"] for n in G.nodes]
+    lons = [G.nodes[n]["x"] for n in G.nodes]
+    logger.info(
+        "réseau OSM : %d voies, %d nœuds, %d tronçons, %d composantes, plus grande = %d nœuds (%.0f%%), "
+        "emprise lat %.4f..%.4f lon %.4f..%.4f, remark=%r",
+        len(ways), G.number_of_nodes(), G.number_of_edges(), len(comps), len(biggest),
+        100.0 * len(biggest) / G.number_of_nodes(),
+        min(lats), max(lats), min(lons), max(lons), remark[:80])
     return G.subgraph(biggest).copy()
 
 
