@@ -1,0 +1,12 @@
+const CACHE='fs-v1';
+const FILES=["./", "index.html", "manifest.webmanifest", "icons/favicon.png", "icons/maskable-512.png", "icons/icon-192.png", "icons/apple-touch-icon.png", "icons/icon-512.png", "audio/done.mp3", "audio/droit.mp3", "audio/go.mp3", "audio/go_droit.mp3", "audio/go_gauche.mp3", "audio/pre_airplane.mp3", "audio/pre_ankleCirc.mp3", "audio/pre_bearCrab.mp3", "audio/pre_bridge1.mp3", "audio/pre_bridgeArms.mp3", "audio/pre_bridgeEl.mp3", "audio/pre_bridgeFull.mp3", "audio/pre_bulgare.mp3", "audio/pre_catcow.mp3", "audio/pre_compress.mp3", "audio/pre_compressOne.mp3", "audio/pre_cossack.mp3", "audio/pre_cossackKb.mp3", "audio/pre_cossackP.mp3", "audio/pre_couch.mp3", "audio/pre_couchKnee.mp3", "audio/pre_couchLift.mp3", "audio/pre_fente.mp3", "audio/pre_fentePR.mp3", "audio/pre_frog.mp3", "audio/pre_frogPR.mp3", "audio/pre_gm.mp3", "audio/pre_hipCirc.mp3", "audio/pre_kneeWall.mp3", "audio/pre_n90.mp3", "audio/pre_n90free.mp3", "audio/pre_n90hold.mp3", "audio/pre_n90lift.mp3", "audio/pre_n90rot.mp3", "audio/pre_negSquat.mp3", "audio/pre_ohSquat.mp3", "audio/pre_pigeon.mp3", "audio/pre_pike.mp3", "audio/pre_rdl.mp3", "audio/pre_rdlKb.mp3", "audio/pre_scapDog.mp3", "audio/pre_shinbox.mp3", "audio/pre_shoulderCirc.mp3", "audio/pre_split.mp3", "audio/pre_squatElb.mp3", "audio/pre_squatFree.mp3", "audio/pre_squatHeel.mp3", "audio/pre_squatKb.mp3", "audio/pre_squatPole.mp3", "audio/pre_squatRock.mp3", "audio/pre_straddle.mp3", "audio/pre_straddleLeg.mp3", "audio/pre_thor.mp3", "audio/pre_thread.mp3", "audio/rest_2_2.mp3", "audio/rest_2_3.mp3", "audio/rest_3_3.mp3", "audio/s2.mp3", "audio/s3.mp3", "audio/side.mp3"];
+self.addEventListener('install',e=>{e.waitUntil(caches.open(CACHE).then(c=>c.addAll(FILES)).then(()=>self.skipWaiting()))});
+self.addEventListener('activate',e=>{e.waitUntil(caches.keys().then(k=>Promise.all(k.filter(x=>x!==CACHE).map(x=>caches.delete(x)))).then(()=>self.clients.claim()))});
+self.addEventListener('fetch',e=>{
+  if(e.request.method!=='GET')return;
+  const u=new URL(e.request.url);
+  if(u.origin===location.origin&&(u.pathname.endsWith('/')||u.pathname.endsWith('index.html'))){
+    e.respondWith(fetch(e.request).then(r=>{const cp=r.clone();caches.open(CACHE).then(c=>c.put(e.request,cp));return r}).catch(()=>caches.match(e.request).then(r=>r||caches.match('index.html'))));return;
+  }
+  e.respondWith(caches.match(e.request).then(r=>r||fetch(e.request).then(res=>{if(res.ok||res.type==='opaque'){const cp=res.clone();caches.open(CACHE).then(c=>c.put(e.request,cp))}return res})));
+});
