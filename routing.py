@@ -37,13 +37,27 @@ logger = logging.getLogger("traceo-routing")
 M_PER_DEG = 111_320.0
 
 OVERPASS_MIRRORS = [
+    "https://overpass.openstreetmap.fr/api/interpreter",   # seul serveur joignable depuis Render lors du test du 20/10/2026
     "https://overpass-api.de/api/interpreter",
     "https://z.overpass-api.de/api/interpreter",
     "https://lz4.overpass-api.de/api/interpreter",
     "https://overpass.kumi.systems/api/interpreter",
     "https://overpass.private.coffee/api/interpreter",
-    "https://overpass.openstreetmap.fr/api/interpreter",
 ]
+
+# Serveurs qui viennent d'échouer : on les essaie en dernier pendant 10 minutes,
+# pour ne pas perdre du temps (jusqu'à 35 s chacun) sur un serveur en panne.
+_MIRROR_FAILED_AT = {}
+_MIRROR_PENALTY_S = 600
+
+
+def _ordered_mirrors():
+    now = time.time()
+    def key(item):
+        i, url = item
+        recently_failed = now - _MIRROR_FAILED_AT.get(url, 0) < _MIRROR_PENALTY_S
+        return (recently_failed, i)
+    return [url for _, url in sorted(enumerate(OVERPASS_MIRRORS), key=key)]
 
 HEADERS = {
     "User-Agent": "Traceo/1.0 (generateur de parcours GPX en forme; https://traceo-api.onrender.com)",
@@ -184,16 +198,17 @@ def fetch_osm_graph(lat, lon, radius_m, profile="route", budget_s=60.0):
     deadline = time.monotonic() + budget_s
     errors = []
     for attempt in range(2):
-        for url in OVERPASS_MIRRORS:
+        for url in _ordered_mirrors():
             remaining = deadline - time.monotonic()
             if remaining < 5:
                 break
             host = url.split("/")[2]
             try:
                 resp = requests.post(url, data={"data": query}, headers=HEADERS,
-                                     timeout=min(40.0, remaining))
+                                     timeout=(6.0, min(35.0, remaining)))
                 if resp.status_code != 200:
                     errors.append(f"{host}: HTTP {resp.status_code}")
+                    _MIRROR_FAILED_AT[url] = time.time()
                     continue
                 G = _graph_from_overpass(resp.json())
                 if len(_CACHE) >= _CACHE_MAX:
@@ -203,6 +218,7 @@ def fetch_osm_graph(lat, lon, radius_m, profile="route", budget_s=60.0):
             except RouteError:
                 raise
             except Exception as e:  # réseau, JSON invalide, serveur surchargé...
+                _MIRROR_FAILED_AT[url] = time.time()
                 errors.append(f"{host}: {type(e).__name__}")
                 logger.warning("Overpass %s : %s %s", host, type(e).__name__, str(e)[:160])
         if time.monotonic() >= deadline - 5:
