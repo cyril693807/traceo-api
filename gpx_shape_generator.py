@@ -100,6 +100,29 @@ def shape_star(n_points=100, width_m=1200, points=5, inner_ratio=0.45):
     return _resample_polyline(verts, n_points)
 
 
+def _polygon(verts, n_points):
+    verts = list(verts) + [verts[0]]
+    return _resample_polyline(verts, n_points)
+
+
+def shape_triangle(n_points=120, width_m=1200):
+    """Triangle équilatéral pointe en haut."""
+    h = width_m * math.sqrt(3) / 2
+    return _polygon([(0, 2 * h / 3), (width_m / 2, -h / 3), (-width_m / 2, -h / 3)], n_points)
+
+
+def shape_square(n_points=120, width_m=1200):
+    """Carré."""
+    a = width_m / 2
+    return _polygon([(-a, a), (a, a), (a, -a), (-a, -a)], n_points)
+
+
+def shape_diamond(n_points=120, width_m=1200):
+    """Losange (plus haut que large)."""
+    a = width_m / 2
+    return _polygon([(0, a * 1.35), (a, 0), (0, -a * 1.35), (-a, 0)], n_points)
+
+
 def shape_text(text, n_points=200, width_m=1500, font_size=200):
     """Convertit un texte (prénom, initiales, mot court) en contour vectoriel
     à parcourir. Utilise le contour de police via matplotlib (TextPath),
@@ -153,6 +176,9 @@ SHAPES = {
     "circle": shape_circle,
     "infinity": shape_infinity,
     "star": shape_star,
+    "triangle": shape_triangle,
+    "square": shape_square,
+    "diamond": shape_diamond,
     "text": shape_text,
 }
 

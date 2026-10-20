@@ -105,7 +105,7 @@
   }
   .latlon-row .btn { width: auto; padding: 8px 12px; font-size: 12px; }
 
-  .shape-row { display: flex; gap: 6px; }
+  .shape-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
   .shape-btn {
     flex: 1;
     background: var(--bg-panel-raised);
@@ -121,6 +121,17 @@
     transition: border-color 0.15s, color 0.15s;
   }
   .shape-btn svg { width: 22px; height: 22px; display: block; }
+  .shape-btn { position: relative; flex-direction: column; gap: 3px; }
+  .shape-name { font-size: 10px; line-height: 1; }
+  .shape-badge { position: absolute; top: 4px; right: 4px; width: 8px; height: 8px; border-radius: 50%; display: none; }
+  .shape-btn[data-verdict] .shape-badge { display: block; }
+  .shape-btn[data-verdict="conseillee"] .shape-badge { background: #3fb27f; }
+  .shape-btn[data-verdict="possible"] .shape-badge { background: #e8a23d; }
+  .shape-btn[data-verdict="deconseillee"] .shape-badge { background: #d9534f; }
+  .shape-btn[data-verdict="deconseillee"] { opacity: 0.45; }
+  .shape-btn[data-verdict="deconseillee"].active { opacity: 1; }
+  .check-legend { font-size: 11px; margin-top: 6px; color: var(--text-muted); }
+  .check-legend b { font-weight: 600; }
   .shape-btn:hover { color: var(--text-primary); }
   .shape-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
 
@@ -275,19 +286,43 @@
       <div class="field">
         <label>Forme</label>
         <div class="shape-row" id="shape-row">
-          <button class="shape-btn active" data-shape="heart" title="Coeur">
+          <button class="shape-btn active" data-shape="heart" title="Cœur">
+            <span class="shape-badge"></span>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 20 C 4 13, 2 8, 6 5 C 9 3, 12 5, 12 8 C 12 5, 15 3, 18 5 C 22 8, 20 13, 12 20 Z"/></svg>
+            <span class="shape-name">Cœur</span>
           </button>
-          <button class="shape-btn" data-shape="star" title="Etoile">
+          <button class="shape-btn" data-shape="star" title="Étoile">
+            <span class="shape-badge"></span>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 3 L14.5 9.5 L21.5 9.8 L15.8 13.9 L17.8 20.6 L12 16.8 L6.2 20.6 L8.2 13.9 L2.5 9.8 L9.5 9.5 Z"/></svg>
+            <span class="shape-name">Étoile</span>
           </button>
           <button class="shape-btn" data-shape="circle" title="Cercle">
+            <span class="shape-badge"></span>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="8.5"/></svg>
+            <span class="shape-name">Cercle</span>
           </button>
           <button class="shape-btn" data-shape="infinity" title="Infini">
+            <span class="shape-badge"></span>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M7 15 C 3 15 3 9 7 9 C 11 9 13 15 17 15 C 21 15 21 9 17 9 C 13 9 11 15 7 15 Z"/></svg>
+            <span class="shape-name">Infini</span>
+          </button>
+          <button class="shape-btn" data-shape="triangle" title="Triangle">
+            <span class="shape-badge"></span>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 4 L20.5 19 L3.5 19 Z"/></svg>
+            <span class="shape-name">Triangle</span>
+          </button>
+          <button class="shape-btn" data-shape="square" title="Carré">
+            <span class="shape-badge"></span>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="5" y="5" width="14" height="14"/></svg>
+            <span class="shape-name">Carré</span>
+          </button>
+          <button class="shape-btn" data-shape="diamond" title="Losange">
+            <span class="shape-badge"></span>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 2.5 L19 12 L12 21.5 L5 12 Z"/></svg>
+            <span class="shape-name">Losange</span>
           </button>
         </div>
+        <div class="check-legend" id="check-legend">Choisis un départ : on t'indiquera les formes qui marchent bien autour.</div>
       </div>
 
       <div class="field">
@@ -444,7 +479,15 @@
     return out;
   }
 
-  const SHAPE_FNS = { heart: shapeHeart, circle: shapeCircle, star: shapeStar, infinity: shapeInfinity };
+  function polygon(verts, n) { return resample(verts.concat([verts[0]]), n); }
+  function shapeTriangle(n, w) { const h = w * Math.sqrt(3) / 2; return polygon([[0, 2 * h / 3], [w / 2, -h / 3], [-w / 2, -h / 3]], n); }
+  function shapeSquare(n, w) { const a = w / 2; return polygon([[-a, a], [a, a], [a, -a], [-a, -a]], n); }
+  function shapeDiamond(n, w) { const a = w / 2; return polygon([[0, a * 1.35], [a, 0], [0, -a * 1.35], [-a, 0]], n); }
+
+  const SHAPE_FNS = { heart: shapeHeart, circle: shapeCircle, star: shapeStar, infinity: shapeInfinity,
+                      triangle: shapeTriangle, square: shapeSquare, diamond: shapeDiamond };
+  const SHAPE_NAMES = { heart: "cœur", star: "étoile", circle: "cercle", infinity: "infini",
+                        triangle: "triangle", square: "carré", diamond: "losange" };
 
   // Largeur de forme qui donne ~lengthKm une fois posée sur les routes
   // (un parcours sur routes est environ 1,4x plus long que la forme idéale).
@@ -494,7 +537,47 @@
     refreshWidth();
   }
   lengthSlider.addEventListener("input", () => setLength(parseInt(lengthSlider.value, 10)));
-  document.querySelectorAll("#length-chips .chip").forEach((c) => c.addEventListener("click", () => setLength(parseInt(c.dataset.km, 10))));
+  lengthSlider.addEventListener("change", () => scheduleCheck());
+  document.querySelectorAll("#length-chips .chip").forEach((c) => c.addEventListener("click", () => { setLength(parseInt(c.dataset.km, 10)); scheduleCheck(); }));
+
+  // ---------------------------------------------------------------
+  // Quelles formes marchent autour du départ ? (estimation serveur rapide)
+  // ---------------------------------------------------------------
+  let checkTimer = null, checkRun = 0;
+  const checkLegend = document.getElementById("check-legend");
+  function scheduleCheck() { clearTimeout(checkTimer); checkTimer = setTimeout(runCheck, 700); }
+  async function runCheck() {
+    const my = ++checkRun;
+    document.querySelectorAll(".shape-btn").forEach((b) => b.removeAttribute("data-verdict"));
+    checkLegend.textContent = "Analyse des routes autour du départ… (jusqu'à une minute si le serveur dort)";
+    try {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 150000);
+      const resp = await fetch(`${API_BASE_URL}/check?lat=${state.center.lat}&lon=${state.center.lon}` +
+        `&length_km=${state.lengthKm}&profile=${encodeURIComponent(state.profile)}`, { signal: ctrl.signal });
+      clearTimeout(t);
+      if (my !== checkRun) return;
+      if (!resp.ok) throw new Error("erreur " + resp.status);
+      const data = await resp.json();
+      state.verdicts = {};
+      document.querySelectorAll(".shape-btn").forEach((b) => {
+        const r = data.formes[b.dataset.shape];
+        if (!r) return;
+        b.setAttribute("data-verdict", r.verdict);
+        state.verdicts[b.dataset.shape] = r.verdict;
+        const label = { conseillee: "conseillée ici", possible: "possible ici", deconseillee: "déconseillée ici" }[r.verdict];
+        b.title = `${SHAPE_NAMES[b.dataset.shape]} : ${label}`;
+      });
+      const good = Object.keys(data.formes).filter((k) => data.formes[k].verdict === "conseillee").map((k) => SHAPE_NAMES[k]);
+      let txt = "🟢 conseillée · 🟠 possible · 🔴 déconseillée ici.";
+      if (good.length) txt += " Meilleurs choix : " + good.join(", ") + ".";
+      if (data.conseil) txt += " " + data.conseil;
+      checkLegend.textContent = txt;
+    } catch (err) {
+      if (my !== checkRun) return;
+      checkLegend.textContent = "Analyse des formes indisponible pour l'instant — tu peux quand même générer.";
+    }
+  }
   setLength(25);
 
   const downloadBtn = document.getElementById("download-btn");
@@ -532,6 +615,7 @@
 
   document.getElementById("profile-select").addEventListener("change", (e) => {
     state.profile = e.target.value;
+    scheduleCheck();
   });
 
   // ---------------------------------------------------------------
@@ -564,7 +648,9 @@
     readout.style.display = "none";
     generateBtn.disabled = true;
     generateBtn.textContent = "Calcul en cours...";
-    statusLine.textContent = "Calcul du parcours sur les routes réelles... Le premier calcul peut prendre jusqu'à une minute (serveur gratuit en veille).";
+    const warn = state.verdicts && state.verdicts[state.shape] === "deconseillee"
+      ? "Attention : cette forme est déconseillée ici, le résultat risque d'être peu reconnaissable. " : "";
+    statusLine.textContent = warn + "Calcul du parcours sur les routes réelles... Le premier calcul peut prendre jusqu'à une minute (serveur gratuit en veille).";
 
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 170000);
@@ -697,6 +783,7 @@
 
   function setCenter(lat, lon, zoom) {
     state.center = { lat, lon };
+    if (typeof scheduleCheck === "function") scheduleCheck();
     state.hasCenter = true;
     document.getElementById("map-hint").style.display = "none";
     if (!map) return;
@@ -785,6 +872,7 @@
   // Dessin immediat au chargement : preuve visuelle que le rendu marche
   // avant meme tout clic (independant de la carte / du reseau).
   drawShapeSvg(SHAPE_FNS[state.shape](120, state.widthM));
+  scheduleCheck();
 
   // Position de l'appareil (demande l'autorisation au navigateur)
   document.getElementById("geoloc-btn").addEventListener("click", () => {

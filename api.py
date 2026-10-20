@@ -25,7 +25,7 @@ from fastapi.responses import FileResponse, RedirectResponse, Response
 from gpx_shape_generator import SHAPES, _haversine_m
 from routing import (
     PROFILES, RoadDataUnavailable, RouteError,
-    diagnose_overpass, fetch_osm_graph, find_best_placements, route_shape_on_roads,
+    check_shapes, diagnose_overpass, fetch_osm_graph, find_best_placements, route_shape_on_roads,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -47,7 +47,7 @@ app.add_middleware(
                     "X-Coverage-Pct", "X-Route-Km", "X-Profile"],
 )
 
-PUBLIC_SHAPES = ["heart", "star", "circle", "infinity"]
+PUBLIC_SHAPES = ["heart", "star", "circle", "infinity", "triangle", "square", "diamond"]
 
 SHIFT_M = 1500
 SEARCH_BUDGET_S = 45
@@ -91,6 +91,72 @@ def graph_dump(lat: float, lon: float, radius_m: int = Query(3500, ge=500, le=60
     }
 
 
+def _make(shape, w):
+    fn = SHAPES[shape]
+    return fn(n_points=240, radius_m=w / 2) if shape == "circle" else fn(n_points=240, width_m=w)
+
+
+def _length_km(pts):
+    return sum(math.dist(pts[i], pts[i + 1]) for i in range(len(pts) - 1)) / 1000.0
+
+
+def shape_points(shape, length_km=None, width_m=5000.0):
+    """Points de la forme (en mètres) dimensionnée pour la longueur demandée."""
+    if length_km is not None:
+        probe_km = _length_km(_make(shape, 4000))
+        width_m = min(10000.0, max(1500.0, 4000.0 * length_km / (ROUTE_OVERHEAD * probe_km)))
+    pts = _make(shape, width_m)
+    return pts, _length_km(pts)
+
+
+def area_radius(pts):
+    """Rayon de la zone de routes à télécharger : forme + marge pour la décaler."""
+    return int(max(abs(c) for p in pts for c in p) * 1.2 + SHIFT_M + 300)
+
+
+# Les formes simples supportent mieux un réseau clairsemé que le cœur ou l'étoile,
+# dont la pointe et les creux doivent tomber pile sur des routes.
+SHAPE_TOLERANCE = {"circle": 12, "triangle": 8, "diamond": 8, "square": 6,
+                   "heart": 0, "star": 0, "infinity": 2}
+
+
+@app.get("/check")
+def check(
+    lat: float = Query(..., ge=-90, le=90),
+    lon: float = Query(..., ge=-180, le=180),
+    length_km: float = Query(25, ge=10, le=45),
+    profile: str = Query("route"),
+):
+    """Indique, pour ce point de départ, quelles formes ont des chances d'être
+    reconnaissables (estimation rapide, sans calcul d'itinéraire)."""
+    if profile not in PROFILES:
+        raise HTTPException(400, f"Profil inconnu '{profile}'. Profils : {list(PROFILES)}")
+    shapes = {s: shape_points(s, length_km)[0] for s in PUBLIC_SHAPES}
+    radius = max(area_radius(p) for p in shapes.values())
+    try:
+        G = fetch_osm_graph(lat, lon, radius, profile)
+    except RoadDataUnavailable as e:
+        raise HTTPException(503, str(e))
+    except RouteError as e:
+        raise HTTPException(422, str(e))
+    t0 = time.monotonic()
+    raw = check_shapes(G, shapes, lat, lon, max_shift_m=SHIFT_M)
+    result = {}
+    for s, v in raw.items():
+        score = v + SHAPE_TOLERANCE.get(s, 0)
+        verdict = "conseillee" if score >= 70 else "possible" if score >= 52 else "deconseillee"
+        result[s] = {"score": round(score, 1), "verdict": verdict}
+    logger.info("check lat=%.4f lon=%.4f %skm %s : %s (%.1fs)", lat, lon, length_km, profile,
+                {k: v["verdict"] for k, v in result.items()}, time.monotonic() - t0)
+    advice = None
+    if all(r["verdict"] == "deconseillee" for r in result.values()):
+        advice = ("Peu de routes adaptées ici : les formes risquent d'être méconnaissables. "
+                  "Essaie le mode VTT, une longueur plus grande ou un départ plus proche d'une ville.")
+    elif not any(r["verdict"] == "conseillee" for r in result.values()):
+        advice = "Réseau routier assez clairsemé : préfère les formes simples (cercle, triangle, losange)."
+    return {"formes": result, "conseil": advice}
+
+
 @app.get("/generate")
 def generate(
     lat: float = Query(..., ge=-90, le=90, description="Latitude du point de départ / centre"),
@@ -105,22 +171,12 @@ def generate(
     if profile not in PROFILES:
         raise HTTPException(400, f"Profil inconnu '{profile}'. Profils : {list(PROFILES)}")
 
-    fn = SHAPES[shape]
-
-    def make(w):
-        return fn(n_points=240, radius_m=w / 2) if shape == "circle" else fn(n_points=240, width_m=w)
-
     # 1. Taille de la forme. Un parcours sur routes est ~1,4x plus long que la forme idéale.
-    if length_km is not None:
-        probe = make(4000)
-        probe_km = sum(math.dist(probe[i], probe[i + 1]) for i in range(len(probe) - 1)) / 1000.0
-        width_m = min(10000.0, max(1500.0, 4000.0 * length_km / (ROUTE_OVERHEAD * probe_km)))
-    pts = make(width_m)
-    ideal_km = sum(math.dist(pts[i], pts[i + 1]) for i in range(len(pts) - 1)) / 1000.0
+    pts, ideal_km = shape_points(shape, length_km, width_m)
     target_km = length_km if length_km is not None else ideal_km * ROUTE_OVERHEAD
 
     # 2. Vraies routes autour (zone = forme + marge pour pouvoir décaler la forme)
-    radius = int(max(abs(c) for p in pts for c in p) * 1.2 + SHIFT_M + 300)
+    radius = area_radius(pts)
     try:
         G = fetch_osm_graph(lat, lon, radius, profile)
     except RoadDataUnavailable as e:

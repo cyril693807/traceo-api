@@ -203,6 +203,10 @@ def fetch_osm_graph(lat, lon, radius_m, profile="route", budget_s=60.0):
     hit = _CACHE.get(key)
     if hit and time.time() - hit[0] < _CACHE_TTL_S:
         return hit[1]
+    # Un réseau déjà téléchargé au même endroit et plus grand fait l'affaire
+    for (klat, klon, kr, kprof), (ts, cached) in list(_CACHE.items()):
+        if (klat, klon, kprof) == key[:2] + (profile,) and kr >= key[2] and time.time() - ts < _CACHE_TTL_S:
+            return cached
 
     dlat = radius_m / M_PER_DEG
     dlon = radius_m / (M_PER_DEG * math.cos(math.radians(lat)))
@@ -472,16 +476,18 @@ def route_shape_on_roads(G, shape_pts_m, lat0, lon0,
     mean_dev = float(np.mean(dev))
     key_dev = (float(np.mean(shapely.distance(shapely.points(np.array(keys)), route_line)))
                if keys else 0.0)
-    coverage = float(100.0 * np.mean(cov <= 40.0))
 
-    # La fidélité se juge par rapport à la taille de la forme : 40 m d'écart sur un
-    # cœur de 6 km est invisible, sur un cœur de 1,5 km il le déforme.
+    # La fidélité se juge par rapport à la taille de la forme : 60 m d'écart sur un
+    # cœur de 5 km ne se voit pas, sur un cœur de 1,5 km il le déforme.
     xs = [p[0] for p in pts]
     span = max(max(xs) - min(xs), 1.0)
+    tol = max(40.0, 0.015 * span)
+    coverage = float(100.0 * np.mean(cov <= tol))
     rel = mean_dev / span
-    if rel <= 0.015 and coverage >= 65:
+    key_rel = key_dev / span
+    if rel <= 0.02 and coverage >= 60 and key_rel <= 0.03:
         quality = "bon"
-    elif rel <= 0.03 and coverage >= 50:
+    elif rel <= 0.035 and coverage >= 45 and key_rel <= 0.06:
         quality = "moyen"
     else:
         quality = "faible"
@@ -585,3 +591,85 @@ def find_best_placements(G, shape_pts_m, lat0, lon0, top=3,
         moved = [((x * c - y * s) * k + dx, (x * s + y * c) * k + dy) for x, y in base]
         out.append({"score": score, "dx": dx, "dy": dy, "scale": k, "rot": rot, "pts": moved})
     return out
+
+
+
+def check_shapes(G, shapes, lat0, lon0, max_shift_m=1500.0, step_m=750.0):
+    """Pour chaque forme {nom: points en mètres}, estime vite si elle peut être
+    dessinée ici : part de la forme qui longe une route allant dans la même
+    direction (à 60 m et 35° près), pour la meilleure position d'un balayage grossier.
+    Ne calcule aucun itinéraire : c'est une indication, pas une garantie."""
+    kx = M_PER_DEG * math.cos(math.radians(lat0))
+    idx = {n: i for i, n in enumerate(G.nodes)}
+    xs = np.array([(G.nodes[n]["x"] - lon0) * kx for n in G.nodes])
+    ys = np.array([(G.nodes[n]["y"] - lat0) * M_PER_DEG for n in G.nodes])
+    eu = np.array([idx[u] for u, v in G.edges()])
+    ev = np.array([idx[v] for u, v in G.edges()])
+    seg_xy = np.stack([np.column_stack([xs[eu], ys[eu]]), np.column_stack([xs[ev], ys[ev]])], axis=1)
+    segs = shapely.linestrings(seg_xy)
+    tree = shapely.STRtree(segs)
+    sdx = seg_xy[:, 1, 0] - seg_xy[:, 0, 0]
+    sdy = seg_xy[:, 1, 1] - seg_xy[:, 0, 1]
+    slen = np.hypot(sdx, sdy) + 1e-9
+    cos_min = math.cos(math.radians(35))
+    shifts = [(dx, dy) for dx in np.arange(-max_shift_m, max_shift_m + 1, step_m)
+              for dy in np.arange(-max_shift_m, max_shift_m + 1, step_m)
+              if math.hypot(dx, dy) <= max_shift_m * 1.2]
+
+    out = {}
+    for name, pts in shapes.items():
+        line = LineString([tuple(p) for p in pts])
+        dist = np.arange(0.0, line.length, 60.0)
+        sx = shapely.get_x(shapely.line_interpolate_point(line, dist))
+        sy = shapely.get_y(shapely.line_interpolate_point(line, dist))
+        ax_ = shapely.line_interpolate_point(line, np.minimum(dist + 25.0, line.length))
+        bx_ = shapely.line_interpolate_point(line, np.maximum(dist - 25.0, 0.0))
+        tx = shapely.get_x(ax_) - shapely.get_x(bx_)
+        ty = shapely.get_y(ax_) - shapely.get_y(bx_)
+        tl = np.hypot(tx, ty) + 1e-9
+        best = 0.0
+        for dx, dy in shifts:
+            s_idx, e_idx = tree.query(shapely.points(np.column_stack([sx + dx, sy + dy])),
+                                      predicate="dwithin", distance=60.0)
+            cosang = np.abs(sdx[e_idx] * tx[s_idx] + sdy[e_idx] * ty[s_idx]) / (slen[e_idx] * tl[s_idx])
+            ok = np.zeros(len(dist), dtype=bool)
+            ok[s_idx[cosang >= cos_min]] = True
+            best = max(best, float(np.mean(ok)))
+        out[name] = round(best * 100, 1)
+    return out
+
+
+def assess_shape(G, shape_pts_m, lat0, lon0, max_shift_m=1500.0):
+    """Estimation rapide (sans calcul d'itinéraire) : la forme peut-elle être
+    dessinée ici ? Retourne la part de la forme à moins de 60 m d'une route et
+    l'écart des points caractéristiques, pour la meilleure position trouvée."""
+    best = find_best_placements(G, shape_pts_m, lat0, lon0, top=1, max_shift_m=max_shift_m)[0]
+    kx = M_PER_DEG * math.cos(math.radians(lat0))
+    xs = np.array([(G.nodes[n]["x"] - lon0) * kx for n in G.nodes])
+    ys = np.array([(G.nodes[n]["y"] - lat0) * M_PER_DEG for n in G.nodes])
+    edges = [(u, v) for u, v in G.edges()]
+    idx = {n: i for i, n in enumerate(G.nodes)}
+    segs = shapely.linestrings([[(xs[idx[u]], ys[idx[u]]), (xs[idx[v]], ys[idx[v]])] for u, v in edges])
+    tree = shapely.STRtree(segs)
+    line = LineString(best["pts"])
+    dist = np.arange(0.0, line.length, 50.0)
+    samples = shapely.line_interpolate_point(line, dist)
+    ahead = shapely.line_interpolate_point(line, np.minimum(dist + 25.0, line.length))
+    behind = shapely.line_interpolate_point(line, np.maximum(dist - 25.0, 0.0))
+    tx = shapely.get_x(ahead) - shapely.get_x(behind)
+    ty = shapely.get_y(ahead) - shapely.get_y(behind)
+    # pour chaque point de la forme : y a-t-il, à moins de 60 m, une route qui va
+    # dans la même direction (à 35° près) ? C'est ce qui permet de "suivre" la forme.
+    s_idx, e_idx = tree.query(samples, predicate="dwithin", distance=60.0)
+    coords = shapely.get_coordinates(segs).reshape(-1, 2, 2)
+    ex = coords[e_idx, 1, 0] - coords[e_idx, 0, 0]
+    ey = coords[e_idx, 1, 1] - coords[e_idx, 0, 1]
+    cosang = np.abs(ex * tx[s_idx] + ey * ty[s_idx]) / (np.hypot(ex, ey) * np.hypot(tx[s_idx], ty[s_idx]) + 1e-9)
+    aligned = np.zeros(len(dist), dtype=bool)
+    aligned[s_idx[cosang >= math.cos(math.radians(35))]] = True
+    _, d = tree.query_nearest(samples, return_distance=True, all_matches=False)
+    keys = key_points(best["pts"])
+    kd = tree.query_nearest(shapely.points(np.array(keys)), return_distance=True, all_matches=False)[1] if keys else np.array([0.0])
+    return {"aligned_pct": round(float(np.mean(aligned)) * 100, 1),
+            "near_pct": round(float(np.mean(d <= 60.0)) * 100, 1),
+            "key_max_m": round(float(np.max(kd)), 0), "placement": best}
