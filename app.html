@@ -1,0 +1,807 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Traceo — parcours GPX en forme</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<style>
+  :root {
+    --bg-deep: #10201b;
+    --bg-panel: #17281f;
+    --bg-panel-raised: #1d3226;
+    --contour: #2c4638;
+    --accent: #e8a23d;
+    --accent-dim: #a97430;
+    --text-primary: #ece7d9;
+    --text-muted: #82998a;
+    --border: #2a3f33;
+    --danger: #d6685a;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; height: 100%; }
+  body {
+    font-family: 'Space Grotesk', sans-serif;
+    background: var(--bg-deep);
+    color: var(--text-primary);
+  }
+  #app-root { min-height: 100vh; display: flex; flex-direction: column; }
+
+  .topbar {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    padding: 18px 22px;
+    border-bottom: 1px solid var(--border);
+  }
+  .topbar .mark { font-size: 20px; font-weight: 600; letter-spacing: 0.01em; }
+  .topbar .tag { font-size: 13px; color: var(--text-muted); }
+
+  .layout { display: flex; flex: 1; min-height: 0; }
+  .chip-row { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+  .chip { background: transparent; border: 1px solid var(--border); color: inherit; border-radius: 999px; padding: 5px 12px; font-size: 12px; cursor: pointer; }
+  .chip.active { border-color: #e8a23d; color: #e8a23d; }
+  @media (max-width: 780px) { .layout { flex-direction: column; } }
+
+  .panel {
+    width: 340px;
+    flex-shrink: 0;
+    padding: 22px;
+    border-right: 1px solid var(--border);
+    overflow-y: auto;
+    position: relative;
+  }
+  @media (max-width: 780px) {
+    .panel { width: 100%; border-right: none; border-bottom: 1px solid var(--border); }
+  }
+
+  .contour-deco { position: absolute; inset: 0; opacity: 0.35; pointer-events: none; z-index: 0; }
+  .panel > * { position: relative; z-index: 1; }
+
+  .field { margin-bottom: 22px; }
+  .field label { display: block; font-size: 13px; color: var(--text-muted); margin-bottom: 8px; }
+  .field input[type="text"] {
+    width: 100%;
+    background: var(--bg-panel-raised);
+    border: 1px solid var(--border);
+    color: var(--text-primary);
+    padding: 10px 12px;
+    border-radius: 4px;
+    font-family: inherit;
+    font-size: 14px;
+  }
+  .field input[type="text"]:focus { outline: none; border-color: var(--accent-dim); }
+  .hint { font-size: 12px; color: var(--text-muted); margin-top: 6px; line-height: 1.4; }
+
+  .select-input {
+    width: 100%;
+    background: var(--bg-panel-raised);
+    border: 1px solid var(--border);
+    color: var(--text-primary);
+    padding: 10px 12px;
+    border-radius: 4px;
+    font-family: inherit;
+    font-size: 14px;
+  }
+  .select-input:focus { outline: none; border-color: var(--accent-dim); }
+
+  .latlon-row {
+    display: flex;
+    gap: 6px;
+    margin-top: 8px;
+  }
+  .latlon-row input {
+    flex: 1;
+    min-width: 0;
+    background: var(--bg-panel-raised);
+    border: 1px solid var(--border);
+    color: var(--text-primary);
+    padding: 8px 8px;
+    border-radius: 4px;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+  }
+  .latlon-row .btn { width: auto; padding: 8px 12px; font-size: 12px; }
+
+  .shape-row { display: flex; gap: 6px; }
+  .shape-btn {
+    flex: 1;
+    background: var(--bg-panel-raised);
+    border: 1px solid var(--border);
+    border-bottom: 2px solid transparent;
+    color: var(--text-muted);
+    padding: 10px 4px 8px;
+    cursor: pointer;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: border-color 0.15s, color 0.15s;
+  }
+  .shape-btn svg { width: 22px; height: 22px; display: block; }
+  .shape-btn:hover { color: var(--text-primary); }
+  .shape-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+  .slider-row { display: flex; align-items: center; gap: 10px; }
+  input[type="range"] { flex: 1; accent-color: var(--accent); }
+  .slider-value {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 13px;
+    color: var(--accent);
+    min-width: 52px;
+    text-align: right;
+  }
+
+  .btn {
+    width: 100%;
+    padding: 12px;
+    border-radius: 4px;
+    border: none;
+    font-family: inherit;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: filter 0.15s;
+  }
+  .btn:hover { filter: brightness(1.08); }
+  .btn-primary { background: var(--accent); color: #1a1305; margin-bottom: 10px; }
+  .btn-secondary { background: transparent; border: 1px solid var(--border); color: var(--text-primary); }
+  .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+  .status-line { font-size: 12px; color: var(--text-muted); margin-top: 10px; min-height: 32px; line-height: 1.4; }
+  .status-line.error { color: var(--danger); }
+
+  .gpx-fallback-link {
+    display: inline-block;
+    margin-top: 8px;
+    font-size: 12px;
+    color: var(--accent);
+    text-decoration: underline;
+    cursor: pointer;
+    background: none;
+    border: none;
+    padding: 0;
+    font-family: inherit;
+  }
+  .gpx-fallback-panel { display: none; margin-top: 10px; }
+  .gpx-fallback-panel.open { display: block; }
+  .gpx-fallback-panel textarea {
+    width: 100%;
+    height: 110px;
+    background: var(--bg-panel-raised);
+    border: 1px solid var(--border);
+    color: var(--text-primary);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px;
+    padding: 8px;
+    border-radius: 4px;
+    resize: vertical;
+  }
+  .gpx-fallback-panel .hint { margin-top: 6px; }
+
+  .map-area { flex: 1; position: relative; min-height: 380px; }
+  #map { width: 100%; height: 100%; background: #0c1712; }
+
+  .readout {
+    position: absolute;
+    bottom: 16px;
+    left: 16px;
+    background: rgba(23, 40, 31, 0.92);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 10px 16px;
+    display: flex;
+    gap: 22px;
+    z-index: 500;
+  }
+  .readout .stat-label { font-size: 11px; color: var(--text-muted); margin-bottom: 2px; }
+  .readout .stat-value { font-family: 'IBM Plex Mono', monospace; font-size: 16px; color: var(--accent); }
+
+  .map-hint {
+    position: absolute;
+    top: 12px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(23, 40, 31, 0.92);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 7px 14px;
+    font-size: 12px;
+    color: var(--text-muted);
+    z-index: 500;
+    text-align: center;
+    max-width: 90%;
+  }
+
+  .svg-preview {
+    position: absolute;
+    top: 16px;
+    right: 16px;
+    width: 220px;
+    height: 220px;
+    background: rgba(16, 32, 27, 0.95);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    z-index: 600;
+    padding: 8px;
+  }
+  .svg-preview .preview-label {
+    font-size: 10px;
+    color: var(--text-muted);
+    margin-bottom: 4px;
+  }
+  .svg-preview svg { width: 100%; height: calc(100% - 16px); display: block; }
+  .svg-preview path {
+    fill: none;
+    stroke: var(--accent);
+    stroke-width: 3;
+    stroke-linejoin: round;
+    stroke-linecap: round;
+  }
+
+  .leaflet-container { background: #0c1712 !important; font-family: 'Space Grotesk', sans-serif; }
+</style>
+</head>
+<body>
+<div id="app-root">
+  <div class="topbar">
+    <span class="mark">Traceo</span>
+    <span class="tag">parcours GPX en forme</span>
+  </div>
+  <div class="layout">
+    <div class="panel">
+      <svg class="contour-deco" viewBox="0 0 340 700" preserveAspectRatio="none">
+        <path d="M-20,60 C 80,20 180,100 340,50" stroke="#2c4638" stroke-width="1" fill="none"/>
+        <path d="M-20,140 C 90,190 200,110 360,170" stroke="#2c4638" stroke-width="1" fill="none"/>
+        <path d="M-20,420 C 100,380 210,460 360,410" stroke="#2c4638" stroke-width="1" fill="none"/>
+        <path d="M-20,560 C 90,610 190,540 360,590" stroke="#2c4638" stroke-width="1" fill="none"/>
+      </svg>
+
+      <div class="field">
+        <label for="addr-input">Point de départ</label>
+        <input type="text" id="addr-input" placeholder="Adresse, ville..." autocomplete="off">
+        <button class="btn btn-secondary" id="geoloc-btn" type="button" style="margin-top:6px;">📍 Utiliser ma position</button>
+        <div class="hint" id="addr-hint">Ou clique directement sur la carte pour placer le centre.</div>
+        <div class="latlon-row">
+          <input type="text" id="lat-input" placeholder="Latitude (ex: 45.6064)" inputmode="decimal">
+          <input type="text" id="lon-input" placeholder="Longitude (ex: 4.8332)" inputmode="decimal">
+          <button class="btn btn-secondary" id="set-latlon-btn" type="button">Ok</button>
+        </div>
+        <div class="hint">Marche sans réseau — utile si la recherche d'adresse ne répond pas.</div>
+      </div>
+
+      <div class="field">
+        <label>Forme</label>
+        <div class="shape-row" id="shape-row">
+          <button class="shape-btn active" data-shape="heart" title="Coeur">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 20 C 4 13, 2 8, 6 5 C 9 3, 12 5, 12 8 C 12 5, 15 3, 18 5 C 22 8, 20 13, 12 20 Z"/></svg>
+          </button>
+          <button class="shape-btn" data-shape="star" title="Etoile">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 3 L14.5 9.5 L21.5 9.8 L15.8 13.9 L17.8 20.6 L12 16.8 L6.2 20.6 L8.2 13.9 L2.5 9.8 L9.5 9.5 Z"/></svg>
+          </button>
+          <button class="shape-btn" data-shape="circle" title="Cercle">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="8.5"/></svg>
+          </button>
+          <button class="shape-btn" data-shape="infinity" title="Infini">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M7 15 C 3 15 3 9 7 9 C 11 9 13 15 17 15 C 21 15 21 9 17 9 C 13 9 11 15 7 15 Z"/></svg>
+          </button>
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="length-slider">Longueur du parcours</label>
+        <div class="slider-row">
+          <input type="range" id="length-slider" min="10" max="45" step="1" value="25">
+          <span class="slider-value" id="length-value">25 km</span>
+        </div>
+        <div class="chip-row" id="length-chips">
+          <button type="button" class="chip" data-km="15">15 km</button>
+          <button type="button" class="chip" data-km="25">25 km</button>
+          <button type="button" class="chip" data-km="35">35 km</button>
+          <button type="button" class="chip" data-km="45">45 km</button>
+        </div>
+        <div class="hint">Longueur visée. Le dessin est plus fidèle en ville et au-dessus de 20 km : le tracé suit les rues, qui forment des escaliers sur les petites formes. La forme est placée au meilleur endroit à quelques km de ton point de départ.</div>
+      </div>
+
+      <div class="field">
+        <label for="profile-select">Type de vélo</label>
+        <select id="profile-select" class="select-input">
+          <option value="route">Route (routes revêtues)</option>
+          <option value="vtt">VTT / gravel (chemins inclus)</option>
+        </select>
+      </div>
+
+      <button class="btn btn-primary" id="generate-btn">Générer le parcours</button>
+      <button class="btn btn-secondary" id="download-btn" disabled>Télécharger le GPX</button>
+      <button class="gpx-fallback-link" id="toggle-gpx-btn" style="display:none;">Le téléchargement ne marche pas ? Voir/copier le GPX</button>
+      <div class="gpx-fallback-panel" id="gpx-fallback-panel">
+        <textarea id="gpx-text" readonly></textarea>
+        <button class="btn btn-secondary" id="copy-gpx-btn" style="margin-top:6px;">Copier le contenu</button>
+        <div class="hint">Colle ce texte dans un fichier .gpx (n'importe quel éditeur de texte, renomme-le en .gpx) si le téléchargement direct ne fonctionne pas dans cet environnement.</div>
+      </div>
+      <div class="status-line" id="status-line"></div>
+    </div>
+
+    <div class="map-area">
+      <div class="map-hint" id="map-hint">Cherche une adresse ou clique sur la carte pour choisir le point de départ</div>
+      <div id="map"></div>
+      <div class="svg-preview">
+        <div class="preview-label">Aperçu de la forme</div>
+        <svg id="shape-svg" viewBox="0 0 200 200">
+          <path id="shape-svg-path" d=""></path>
+        </svg>
+      </div>
+      <div class="readout" id="readout" style="display:none;">
+        <div>
+          <div class="stat-label">longueur estimée</div>
+          <div class="stat-value" id="stat-length">--</div>
+        </div>
+        <div>
+          <div class="stat-label">forme</div>
+          <div class="stat-value" id="stat-shape">--</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+(function () {
+  const state = {
+    center: { lat: 45.6064, lon: 4.8332 }, // Communay par defaut
+    shape: "heart",
+    lengthKm: 25,
+    widthM: 4000,
+    profile: "route",
+    hasCenter: true, // un centre par defaut existe toujours (Lyon) : la generation ne doit jamais etre bloquee
+    shapeLatLon: null,
+  };
+
+  const statusLine = document.getElementById("status-line");
+
+  // Toute erreur JS non interceptee s'affiche ici au lieu d'echouer en silence
+  window.addEventListener("error", (e) => {
+    statusLine.textContent = "Erreur script : " + e.message;
+    statusLine.classList.add("error");
+  });
+
+  // ---------------------------------------------------------------
+  // Geometrie : memes formules que le module Python (coherence garantie)
+  // ---------------------------------------------------------------
+  function metersToLatLon(centerLat, centerLon, dxM, dyM) {
+    const latDegPerM = 1 / 111320;
+    const lonDegPerM = 1 / (111320 * Math.cos(centerLat * Math.PI / 180));
+    return [centerLat + dyM * latDegPerM, centerLon + dxM * lonDegPerM];
+  }
+
+  function shapeHeart(n, widthM) {
+    let xs = [], ys = [];
+    for (let i = 0; i < n; i++) {
+      const t = (i / (n - 1)) * 2 * Math.PI;
+      const x = 16 * Math.pow(Math.sin(t), 3);
+      const y = 13 * Math.cos(t) - 5 * Math.cos(2 * t) - 2 * Math.cos(3 * t) - Math.cos(4 * t);
+      xs.push(x); ys.push(y);
+    }
+    const scale = widthM / (Math.max(...xs) - Math.min(...xs));
+    return xs.map((x, i) => [x * scale, ys[i] * scale]);
+  }
+
+  function shapeCircle(n, widthM) {
+    const r = widthM / 2;
+    const pts = [];
+    for (let i = 0; i < n; i++) {
+      const t = (i / (n - 1)) * 2 * Math.PI;
+      pts.push([r * Math.sin(t), r * Math.cos(t)]);
+    }
+    return pts;
+  }
+
+  function shapeStar(n, widthM, points = 5, innerRatio = 0.45) {
+    const outerR = widthM / 2;
+    const innerR = outerR * innerRatio;
+    const verts = [];
+    for (let i = 0; i <= points * 2; i++) {
+      const r = i % 2 === 0 ? outerR : innerR;
+      const angle = Math.PI / 2 + (i * Math.PI) / points;
+      verts.push([r * Math.cos(angle), r * Math.sin(angle)]);
+    }
+    return resample(verts, n);
+  }
+
+  function shapeInfinity(n, widthM) {
+    const scale = widthM / 2;
+    const pts = [];
+    for (let i = 0; i < n; i++) {
+      const t = (i / (n - 1)) * 2 * Math.PI;
+      const denom = 1 + Math.sin(t) * Math.sin(t);
+      pts.push([(scale * Math.cos(t)) / denom, (scale * Math.cos(t) * Math.sin(t)) / denom]);
+    }
+    return pts;
+  }
+
+  function resample(points, n) {
+    const cum = [0];
+    for (let i = 1; i < points.length; i++) {
+      const dx = points[i][0] - points[i - 1][0];
+      const dy = points[i][1] - points[i - 1][1];
+      cum.push(cum[i - 1] + Math.hypot(dx, dy));
+    }
+    const total = cum[cum.length - 1];
+    const out = [];
+    for (let k = 0; k < n; k++) {
+      const target = (k / (n - 1)) * total;
+      let idx = 0;
+      while (idx < cum.length - 1 && cum[idx + 1] < target) idx++;
+      const segLen = cum[idx + 1] - cum[idx] || 1;
+      const f = (target - cum[idx]) / segLen;
+      const x = points[idx][0] + f * (points[idx + 1][0] - points[idx][0]);
+      const y = points[idx][1] + f * (points[idx + 1][1] - points[idx][1]);
+      out.push([x, y]);
+    }
+    return out;
+  }
+
+  const SHAPE_FNS = { heart: shapeHeart, circle: shapeCircle, star: shapeStar, infinity: shapeInfinity };
+
+  // Largeur de forme qui donne ~lengthKm une fois posée sur les routes
+  // (un parcours sur routes est environ 1,4x plus long que la forme idéale).
+  function widthForLength(shape, lengthKm) {
+    const probe = SHAPE_FNS[shape](240, 4000);
+    let perim = 0;
+    for (let i = 1; i < probe.length; i++) perim += Math.hypot(probe[i][0] - probe[i - 1][0], probe[i][1] - probe[i - 1][1]);
+    return Math.min(10000, Math.max(1500, 4000 * (lengthKm * 1000) / (1.4 * perim)));
+  }
+  function refreshWidth() { state.widthM = widthForLength(state.shape, state.lengthKm); }
+
+  function buildShapeLatLon() {
+    const pts = SHAPE_FNS[state.shape](120, state.widthM);
+    return pts.map(([dx, dy]) => metersToLatLon(state.center.lat, state.center.lon, dx, dy));
+  }
+
+  function haversine(lat1, lon1, lat2, lon2) {
+    const R = 6371000;
+    const p1 = lat1 * Math.PI / 180, p2 = lat2 * Math.PI / 180;
+    const dphi = (lat2 - lat1) * Math.PI / 180;
+    const dlambda = (lon2 - lon1) * Math.PI / 180;
+    const a = Math.sin(dphi / 2) ** 2 + Math.cos(p1) * Math.cos(p2) * Math.sin(dlambda / 2) ** 2;
+    return 2 * R * Math.asin(Math.sqrt(a));
+  }
+
+  // ---------------------------------------------------------------
+  // Controles formes / largeur — attaches en premier, ne dependent
+  // jamais de la carte : la generation doit marcher meme si Leaflet
+  // ne charge pas.
+  // ---------------------------------------------------------------
+  document.querySelectorAll(".shape-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".shape-btn").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      state.shape = btn.dataset.shape;
+      refreshWidth();
+    });
+  });
+
+  const lengthSlider = document.getElementById("length-slider");
+  const lengthValue = document.getElementById("length-value");
+  function setLength(km) {
+    state.lengthKm = km;
+    lengthSlider.value = km;
+    lengthValue.textContent = km + " km";
+    document.querySelectorAll("#length-chips .chip").forEach((c) => c.classList.toggle("active", parseInt(c.dataset.km, 10) === km));
+    refreshWidth();
+  }
+  lengthSlider.addEventListener("input", () => setLength(parseInt(lengthSlider.value, 10)));
+  document.querySelectorAll("#length-chips .chip").forEach((c) => c.addEventListener("click", () => setLength(parseInt(c.dataset.km, 10))));
+  setLength(25);
+
+  const downloadBtn = document.getElementById("download-btn");
+  const readout = document.getElementById("readout");
+
+  // Rendu SVG pur de la forme (aucune dependance externe, aucun reseau,
+  // aucune carte : ca doit s'afficher dans n'importe quel navigateur).
+  function drawShapeSvg(shapePointsMeters) {
+    const xs = shapePointsMeters.map((p) => p[0]);
+    const ys = shapePointsMeters.map((p) => p[1]);
+    const minX = Math.min(...xs), maxX = Math.max(...xs);
+    const minY = Math.min(...ys), maxY = Math.max(...ys);
+    const spanX = maxX - minX || 1;
+    const spanY = maxY - minY || 1;
+    const pad = 20;
+    const size = 200 - pad * 2;
+    const scale = Math.min(size / spanX, size / spanY);
+    const d = shapePointsMeters
+      .map(([x, y], i) => {
+        const sx = pad + (x - minX) * scale + (size - spanX * scale) / 2;
+        // axe Y inverse (SVG: y vers le bas)
+        const sy = pad + (maxY - y) * scale + (size - spanY * scale) / 2;
+        return `${i === 0 ? "M" : "L"} ${sx.toFixed(1)},${sy.toFixed(1)}`;
+      })
+      .join(" ") + " Z";
+    document.getElementById("shape-svg-path").setAttribute("d", d);
+  }
+
+  const toggleGpxBtn = document.getElementById("toggle-gpx-btn");
+  const gpxFallbackPanel = document.getElementById("gpx-fallback-panel");
+  const gpxTextArea = document.getElementById("gpx-text");
+  const copyGpxBtn = document.getElementById("copy-gpx-btn");
+  const generateBtn = document.getElementById("generate-btn");
+  const _noop = null;
+
+  document.getElementById("profile-select").addEventListener("change", (e) => {
+    state.profile = e.target.value;
+  });
+
+  // ---------------------------------------------------------------
+  // Generation : le SEUL GPX proposé est celui calculé par le serveur sur
+  // les vraies routes. Le dessin pointillé de la forme idéale n'est qu'un
+  // repère visuel pendant l'attente — il n'est jamais exportable, parce qu'il
+  // ne suit aucune route.
+  // ---------------------------------------------------------------
+  const API_BASE_URL = "https://traceo-api.onrender.com";
+  let runId = 0;
+
+  generateBtn.addEventListener("click", async () => {
+    const myRun = ++runId;
+    statusLine.classList.remove("error");
+
+    // Repère visuel immédiat (forme idéale, pas un parcours)
+    const shapePointsMeters = SHAPE_FNS[state.shape](120, state.widthM);
+    const ideal = shapePointsMeters.map(([dx, dy]) => metersToLatLon(state.center.lat, state.center.lon, dx, dy));
+    drawShapeSvg(shapePointsMeters);
+    if (map) {
+      if (shapeLine) map.removeLayer(shapeLine);
+      shapeLine = L.polyline(ideal, { color: "#e8a23d", weight: 2, opacity: 0.6, dashArray: "6 6" }).addTo(map);
+      map.invalidateSize();
+      map.fitBounds(shapeLine.getBounds(), { padding: [40, 40] });
+    }
+
+    state.gpxText = null;
+    downloadBtn.disabled = true;
+    toggleGpxBtn.style.display = "none";
+    readout.style.display = "none";
+    generateBtn.disabled = true;
+    generateBtn.textContent = "Calcul en cours...";
+    statusLine.textContent = "Calcul du parcours sur les routes réelles... Le premier calcul peut prendre jusqu'à une minute (serveur gratuit en veille).";
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 100000);
+    try {
+      const url = `${API_BASE_URL}/generate?lat=${state.center.lat}&lon=${state.center.lon}` +
+        `&shape=${encodeURIComponent(state.shape)}&length_km=${state.lengthKm}` +
+        `&profile=${encodeURIComponent(state.profile)}`;
+      const resp = await fetch(url, { signal: controller.signal });
+
+      if (!resp.ok) {
+        let detail = `erreur ${resp.status}`;
+        try { detail = (await resp.json()).detail || detail; } catch (_) {}
+        throw new Error(detail);
+      }
+      const gpxText = await resp.text();
+      if (myRun !== runId) return; // une génération plus récente a pris le relais
+
+      const points = [];
+      const re = /<trkpt lat="([\-\d.]+)" lon="([\-\d.]+)"/g;
+      let m;
+      while ((m = re.exec(gpxText)) !== null) points.push([parseFloat(m[1]), parseFloat(m[2])]);
+      if (points.length < 4) throw new Error("réponse du serveur vide ou invalide");
+
+      state.gpxText = gpxText;
+      gpxTextArea.value = gpxText;
+      downloadBtn.disabled = false;
+      toggleGpxBtn.style.display = "inline-block";
+
+      if (map) {
+        if (shapeLine) map.removeLayer(shapeLine);
+        if (startMarker) map.removeLayer(startMarker);
+        startMarker = L.circleMarker(points[0], { radius: 7, color: "#fff", fillColor: "#3fb27f", fillOpacity: 1, weight: 2 }).addTo(map)
+          .bindTooltip("Départ du tracé", { permanent: false });
+        shapeLine = L.polyline(points, { color: "#e8a23d", weight: 3.5, opacity: 0.95 }).addTo(map);
+        map.invalidateSize();
+        map.fitBounds(shapeLine.getBounds(), { padding: [40, 40] });
+      }
+
+      const km = resp.headers.get("x-route-km");
+      const quality = resp.headers.get("x-quality");
+      const dev = resp.headers.get("x-mean-deviation-m");
+      document.getElementById("stat-length").textContent = km ? `${km} km` : "--";
+      document.getElementById("stat-shape").textContent = quality ? `fidélité : ${quality}` : state.shape;
+      readout.style.display = "flex";
+
+      let msg = "Parcours prêt : il suit les routes réelles. Le point vert marque le départ du tracé, qui peut être à quelques km de ton point choisi.";
+      if (dev) msg += ` Écart moyen avec la forme idéale : ${Math.round(dev)} m.`;
+      if (quality === "faible") msg += " Fidélité faible : essaie une longueur plus grande ou un départ plus proche d'une ville.";
+      statusLine.textContent = msg;
+    } catch (err) {
+      if (myRun !== runId) return;
+      statusLine.textContent = err.name === "AbortError"
+        ? "Le serveur met trop de temps à répondre. Réessaie dans une minute."
+        : `Impossible de générer le parcours : ${err.message}`;
+      statusLine.classList.add("error");
+    } finally {
+      clearTimeout(timeoutId);
+      if (myRun === runId) {
+        generateBtn.disabled = false;
+        generateBtn.textContent = "Générer le parcours";
+      }
+    }
+  });
+
+  downloadBtn.addEventListener("click", async () => {
+    if (!state.gpxText) return;
+    const filename = `traceo_${state.shape}.gpx`;
+
+    // 1. Partage natif Android/iOS : ouvre le menu de partage du systeme
+    // ("Enregistrer dans Fichiers", Drive, etc.) — contourne les
+    // restrictions de telechargement de certains navigateurs embarques.
+    try {
+      const file = new File([state.gpxText], filename, { type: "application/gpx+xml" });
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file], title: filename });
+        statusLine.textContent = "Fichier envoyé au menu de partage — choisis \"Enregistrer dans Fichiers\" ou l'app de ton choix.";
+        statusLine.classList.remove("error");
+        return;
+      }
+    } catch (err) {
+      if (err && err.name === "AbortError") return; // l'utilisateur a juste annule le partage
+      // sinon on continue vers les autres methodes ci-dessous
+    }
+
+    // 2. Telechargement classique via <a download>
+    try {
+      const blob = new Blob([state.gpxText], { type: "application/gpx+xml" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      statusLine.textContent = "Téléchargement lancé — regarde tes notifications ou le dossier Téléchargements.";
+      statusLine.classList.remove("error");
+    } catch (err) {
+      // 3. Dernier repli : texte copiable (panneau deja affiche a cote)
+      statusLine.textContent = "Téléchargement indisponible ici — utilise le lien 'Voir/copier le GPX' juste en dessous.";
+      statusLine.classList.add("error");
+    }
+  });
+
+  toggleGpxBtn.addEventListener("click", () => {
+    gpxFallbackPanel.classList.toggle("open");
+  });
+
+  copyGpxBtn.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(gpxTextArea.value);
+      copyGpxBtn.textContent = "Copié !";
+    } catch (err) {
+      // Repli : selection manuelle du texte pour un copier-coller a la main
+      gpxTextArea.focus();
+      gpxTextArea.select();
+      copyGpxBtn.textContent = "Sélectionné — fais Copier";
+    }
+    setTimeout(() => { copyGpxBtn.textContent = "Copier le contenu"; }, 2000);
+  });
+
+  // ---------------------------------------------------------------
+  // Carte — best-effort : si Leaflet ou les tuiles ne chargent pas,
+  // le reste de l'appli (formes, stats, export GPX) continue de marcher.
+  // ---------------------------------------------------------------
+  let map = null;
+  let centerMarker = null;
+  let shapeLine = null;
+  let startMarker = null;
+
+  function setCenter(lat, lon, zoom) {
+    state.center = { lat, lon };
+    state.hasCenter = true;
+    document.getElementById("map-hint").style.display = "none";
+    if (!map) return;
+    if (centerMarker) map.removeLayer(centerMarker);
+    centerMarker = L.circleMarker([lat, lon], {
+      radius: 5, color: "#e8a23d", fillColor: "#e8a23d", fillOpacity: 1, weight: 2,
+    }).addTo(map);
+    map.setView([lat, lon], zoom || map.getZoom());
+  }
+
+  try {
+    if (typeof L === "undefined") throw new Error("Leaflet non chargé (bloqué par le réseau ?)");
+    map = L.map("map", { zoomControl: true }).setView([state.center.lat, state.center.lon], 14);
+    L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
+      attribution: "&copy; OpenStreetMap, &copy; CARTO",
+      subdomains: "abcd",
+      maxZoom: 19,
+    }).addTo(map);
+    map.on("click", (e) => setCenter(e.latlng.lat, e.latlng.lng, undefined));
+    setCenter(state.center.lat, state.center.lon, 14);
+    document.getElementById("map-hint").style.display = "block";
+  } catch (err) {
+    document.getElementById("map-hint").textContent = "Carte indisponible : " + err.message + " — la génération de forme fonctionne quand même ci-contre.";
+    document.getElementById("map-hint").style.display = "block";
+  }
+
+  // ---------------------------------------------------------------
+  // Geocodage (Nominatim) avec repli gracieux sur le clic manuel
+  // ---------------------------------------------------------------
+  const addrInput = document.getElementById("addr-input");
+  const addrHint = document.getElementById("addr-hint");
+  let geocodeTimer = null;
+
+  addrInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      clearTimeout(geocodeTimer);
+      geocodeAddress(addrInput.value);
+    }
+  });
+  addrInput.addEventListener("input", () => {
+    clearTimeout(geocodeTimer);
+    const val = addrInput.value.trim();
+    if (val.length < 4) return;
+    geocodeTimer = setTimeout(() => geocodeAddress(val), 700);
+  });
+
+  async function geocodeAddress(query) {
+    if (!query) return;
+    addrHint.textContent = "Recherche en cours...";
+    try {
+      const url = `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(query)}`;
+      const resp = await fetch(url, { headers: { Accept: "application/json" } });
+      if (!resp.ok) throw new Error("reseau");
+      const data = await resp.json();
+      if (data && data.length > 0) {
+        setCenter(parseFloat(data[0].lat), parseFloat(data[0].lon), 14);
+        addrHint.textContent = "Position trouvée — ajuste en cliquant sur la carte si besoin.";
+      } else {
+        addrHint.textContent = "Adresse introuvable — clique directement sur la carte.";
+      }
+    } catch (err) {
+      addrHint.textContent = "Recherche indisponible ici — utilise les champs latitude/longitude ci-dessous, ou clique sur la carte.";
+    }
+  }
+
+  // ---------------------------------------------------------------
+  // Coordonnees manuelles : fonctionne sans aucun reseau, repli fiable
+  // si la recherche d'adresse ou la carte ne repondent pas.
+  // ---------------------------------------------------------------
+  const latInput = document.getElementById("lat-input");
+  const lonInput = document.getElementById("lon-input");
+  latInput.value = "45.6064"; // Communay, pre-rempli pour aller plus vite
+  lonInput.value = "4.8332";
+
+  document.getElementById("set-latlon-btn").addEventListener("click", () => {
+    const lat = parseFloat(latInput.value.replace(",", "."));
+    const lon = parseFloat(lonInput.value.replace(",", "."));
+    if (Number.isNaN(lat) || Number.isNaN(lon) || lat < -90 || lat > 90 || lon < -180 || lon > 180) {
+      addrHint.textContent = "Coordonnées invalides — latitude entre -90 et 90, longitude entre -180 et 180.";
+      return;
+    }
+    setCenter(lat, lon, 14);
+    addrHint.textContent = `Centre défini : ${lat.toFixed(4)}, ${lon.toFixed(4)}.`;
+  });
+
+  // Dessin immediat au chargement : preuve visuelle que le rendu marche
+  // avant meme tout clic (independant de la carte / du reseau).
+  drawShapeSvg(SHAPE_FNS[state.shape](120, state.widthM));
+
+  // Position de l'appareil (demande l'autorisation au navigateur)
+  document.getElementById("geoloc-btn").addEventListener("click", () => {
+    if (!navigator.geolocation) { addrHint.textContent = "Position indisponible sur cet appareil."; return; }
+    addrHint.textContent = "Recherche de ta position...";
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setCenter(pos.coords.latitude, pos.coords.longitude, 14);
+        document.getElementById("lat-input").value = pos.coords.latitude.toFixed(5);
+        document.getElementById("lon-input").value = pos.coords.longitude.toFixed(5);
+        addrHint.textContent = "Départ placé sur ta position.";
+      },
+      () => { addrHint.textContent = "Position refusée ou indisponible : cherche une adresse ou clique sur la carte."; },
+      { timeout: 10000 }
+    );
+  });
+})();
+</script>
+</body>
+</html>

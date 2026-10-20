@@ -13,13 +13,14 @@ Lancer en local :  uvicorn api:app --reload   puis ouvrir http://127.0.0.1:8000/
 import datetime
 import logging
 import math
+import os
 import time
 
 import gpxpy
 import gpxpy.gpx
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse, Response
+from fastapi.responses import FileResponse, RedirectResponse, Response
 
 from gpx_shape_generator import SHAPES, _haversine_m
 from routing import (
@@ -56,7 +57,14 @@ ROUTE_OVERHEAD = 1.4  # longueur réelle du parcours / longueur de la forme idé
 
 @app.get("/", include_in_schema=False)
 def home():
-    return RedirectResponse("/docs")
+    return RedirectResponse("/app")
+
+
+@app.get("/app", include_in_schema=False)
+def web_app():
+    """L'interface web de Traceo (une seule page)."""
+    return FileResponse(os.path.join(os.path.dirname(os.path.abspath(__file__)), "app.html"),
+                        media_type="text/html")
 
 
 @app.get("/health")
