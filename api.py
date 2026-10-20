@@ -50,8 +50,7 @@ app.add_middleware(
 PUBLIC_SHAPES = ["heart", "star", "circle", "infinity"]
 
 SHIFT_M = 1500
-SEARCH_BUDGET_S = 30
-TOP_PLACEMENTS = 12
+SEARCH_BUDGET_S = 45
 ROUTE_OVERHEAD = 1.4  # longueur réelle du parcours / longueur de la forme idéale
 
 
@@ -121,7 +120,7 @@ def generate(
     target_km = length_km if length_km is not None else ideal_km * ROUTE_OVERHEAD
 
     # 2. Vraies routes autour (zone = forme + marge pour pouvoir décaler la forme)
-    radius = int(max(abs(c) for p in pts for c in p) * 1.25 + SHIFT_M + 600)
+    radius = int(max(abs(c) for p in pts for c in p) * 1.2 + SHIFT_M + 300)
     try:
         G = fetch_osm_graph(lat, lon, radius, profile)
     except RoadDataUnavailable as e:
@@ -131,27 +130,47 @@ def generate(
 
     # 3. Où poser la forme ? On teste de nombreuses positions / tailles / rotations
     #    (évaluation rapide), puis on trace pour de bon les meilleures et on garde la plus fidèle.
+    #    Le serveur gratuit est lent : on travaille en deux tours dans un budget de temps.
     t0 = time.monotonic()
     best = None
-    try:
-        placements = find_best_placements(G, pts, lat, lon, top=TOP_PLACEMENTS, max_shift_m=SHIFT_M)
-    except Exception:
-        logger.exception("Echec de la recherche de position")
-        placements = [{"pts": pts, "dx": 0, "dy": 0, "scale": 1.0, "rot": 0}]
-    for p in placements:
-        if best is not None and time.monotonic() - t0 > SEARCH_BUDGET_S:
-            break
+
+    def attempt(shape_pts, n_routes):
+        """Cherche les meilleures positions de la forme et trace les n_routes premières."""
+        nonlocal best
         try:
-            r, mm = route_shape_on_roads(G, p["pts"], lat, lon)
-        except RouteError:
-            continue
+            placements = find_best_placements(G, shape_pts, lat, lon, top=n_routes, max_shift_m=SHIFT_M)
         except Exception:
-            logger.exception("Echec du tracé")
-            continue
-        km_err = abs(mm["route_km"] - target_km) / target_km
-        score = mm["mean_dev_m"] / max(mm["coverage_pct"], 1.0) * (1.0 + 2.0 * km_err)
-        if best is None or score < best[0]:
-            best = (score, r, mm, p)
+            logger.exception("Echec de la recherche de position")
+            placements = [{"pts": shape_pts, "dx": 0, "dy": 0, "scale": 1.0, "rot": 0}]
+        ratios = []
+        for p in placements:
+            if best is not None and time.monotonic() - t0 > SEARCH_BUDGET_S:
+                break
+            try:
+                r, mm = route_shape_on_roads(G, p["pts"], lat, lon)
+            except RouteError:
+                continue
+            except Exception:
+                logger.exception("Echec du tracé")
+                continue
+            ideal = mm["shape_km"]
+            if ideal > 0:
+                ratios.append(mm["route_km"] / ideal)
+            km_err = abs(mm["route_km"] - target_km) / target_km
+            score = mm["mean_dev_m"] / max(mm["coverage_pct"], 1.0) * (1.0 + 2.0 * km_err)
+            if best is None or score < best[0]:
+                best = (score, r, mm, p)
+        return ratios
+
+    # Tour 1 : taille nominale. On mesure de combien le parcours réel dépasse la forme idéale ici.
+    ratios = attempt(pts, 3)
+    # Tour 2 : on recale la taille de la forme pour tomber sur la longueur demandée.
+    if ratios and time.monotonic() - t0 < SEARCH_BUDGET_S:
+        ratio = sorted(ratios)[len(ratios) // 2]
+        k = min(1.25, max(0.5, target_km / (ratio * ideal_km)))
+        if abs(k - 1.0) > 0.08:
+            logger.info("recalage de la taille : x%.2f (parcours réel / forme idéale = %.2f)", k, ratio)
+            attempt([(x * k, y * k) for x, y in pts], 4)
     if best is None:
         raise HTTPException(422, "Impossible de tracer cette forme ici. Essaie une zone plus urbaine ou une autre longueur.")
     _, route, m, chosen = best

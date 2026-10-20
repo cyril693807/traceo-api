@@ -434,8 +434,8 @@ def route_shape_on_roads(G, shape_pts_m, lat0, lon0,
 # ----------------------------------------------------------------------------
 
 def find_best_placements(G, shape_pts_m, lat0, lon0, top=3,
-                         max_shift_m=1500.0, step_m=400.0,
-                         scales=(0.8, 0.9, 1.0, 1.1, 1.2), rotations_deg=(-10, 0, 10)):
+                         max_shift_m=1500.0, step_m=500.0,
+                         scales=(0.9, 1.0, 1.1), rotations_deg=(-10, 0, 10)):
     """Cherche où poser la forme (décalage, taille, rotation) pour qu'elle tombe
     sur le plus de routes. Évaluation très rapide : on mesure, pour chaque position
     candidate, la distance de la forme aux routes les plus proches (pas de calcul
@@ -457,7 +457,7 @@ def find_best_placements(G, shape_pts_m, lat0, lon0, top=3,
 
     base = [tuple(p) for p in shape_pts_m]
     line = LineString(base)
-    samples = np.array([(p.x, p.y) for p in _samples(line, step=60.0)])
+    samples = np.array([(p.x, p.y) for p in _samples(line, step=90.0)])
 
     def evaluate(k, rot, dx, dy):
         c, sn = math.cos(math.radians(rot)), math.sin(math.radians(rot))
