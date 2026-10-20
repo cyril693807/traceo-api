@@ -38,6 +38,11 @@ body{background:var(--bg);color:var(--ink);font-family:var(--f-body);font-size:1
   display:grid;gap:20px}
 header h1{font-family:var(--f-display);font-weight:700;font-size:30px;line-height:1;margin:0;letter-spacing:.01em;text-wrap:balance}
 .brand{display:flex;align-items:center;gap:12px}.brand img{border-radius:14px;flex:none}
+.install{display:flex;gap:12px;align-items:center;background:var(--surface);border:1px solid var(--accent);border-radius:14px;padding:12px 14px}
+.install p{margin:0;font-size:13.5px;flex:1;min-width:0}
+.install b{display:block;font-size:14.5px}
+.install button{all:unset;cursor:pointer;background:var(--accent);color:var(--accent-ink);font-weight:600;padding:10px 16px;border-radius:10px;white-space:nowrap}
+.install button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 header p{margin:4px 0 0;color:var(--muted);font-size:14px}
 .label{font-size:11px;font-weight:600;letter-spacing:.09em;text-transform:uppercase;color:var(--muted)}
 .months{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:4px}
@@ -113,6 +118,8 @@ footer{font-size:12.5px;color:var(--muted);max-width:70ch}
     <div class="brand"><img src="icons/icon-192.png" alt="" width="52" height="52"><h1>Force et Souplesse</h1></div>
     <p>15 min par jour · hanches d'abord · suis le bonhomme et le minuteur</p>
   </header>
+
+  <div class="install" id="install" hidden><p><b>Installer l'appli</b><span id="installTxt">Ajoute Force et Souplesse à ton écran d'accueil.</span></p><button id="installBtn" hidden>Installer</button></div>
 
   <section aria-label="Choix de la séance">
     <div class="label" style="margin-bottom:6px">Bloc du mois · touche un mois puis une séance</div>
@@ -635,5 +642,22 @@ requestAnimationFrame(t=>{last=t;tick(t)});
 })();
 </script>
 <script>if('serviceWorker' in navigator){addEventListener('load',()=>navigator.serviceWorker.register('sw.js').catch(()=>{}))}</script>
+<script>
+(function(){
+  const box=document.getElementById('install'),btn=document.getElementById('installBtn'),txt=document.getElementById('installTxt');
+  const standalone=matchMedia('(display-mode: standalone)').matches||navigator.standalone;
+  if(standalone) return;
+  const ua=navigator.userAgent, ios=/iPhone|iPad|iPod/.test(ua), android=/Android/.test(ua);
+  let deferred=null;
+  addEventListener('beforeinstallprompt',e=>{e.preventDefault();deferred=e;btn.hidden=false;txt.textContent="Une icône sur ton écran d'accueil, en plein écran, utilisable hors connexion.";box.hidden=false});
+  btn.onclick=async()=>{if(!deferred)return;deferred.prompt();const r=await deferred.userChoice;deferred=null;if(r.outcome==='accepted')box.hidden=true};
+  addEventListener('appinstalled',()=>{box.hidden=true});
+  setTimeout(()=>{if(deferred)return;
+    if(ios) txt.textContent="Sur iPhone : ouvre cette page dans Safari, touche le bouton Partager (carré avec une flèche), puis « Sur l'écran d'accueil ».";
+    else if(android) txt.textContent="Dans Chrome : menu ⋮ en haut à droite, puis « Ajouter à l'écran d'accueil », puis « Installer ».";
+    else txt.textContent="Ouvre cette adresse dans Chrome sur ton téléphone pour l'installer.";
+    box.hidden=false},2500);
+})();
+</script>
 </body>
 </html>
