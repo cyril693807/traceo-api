@@ -20,6 +20,7 @@ Ici :
   - on supprime les allers-retours (impasses) et on mesure la fidélité.
 """
 
+import gc
 import logging
 import math
 import time
@@ -188,7 +189,7 @@ def _graph_from_overpass(data):
 
 
 _CACHE = {}
-_CACHE_MAX = 6
+_CACHE_MAX = 1   # serveur gratuit : 512 Mo de mémoire, un seul réseau à la fois
 _CACHE_TTL_S = 3600
 
 
@@ -207,6 +208,10 @@ def fetch_osm_graph(lat, lon, radius_m, profile="route", budget_s=60.0):
     for (klat, klon, kr, kprof), (ts, cached) in list(_CACHE.items()):
         if (klat, klon, kprof) == key[:2] + (profile,) and kr >= key[2] and time.time() - ts < _CACHE_TTL_S:
             return cached
+
+    # Place mémoire : on libère l'ancien réseau AVANT d'en télécharger un nouveau
+    _CACHE.clear()
+    gc.collect()
 
     dlat = radius_m / M_PER_DEG
     dlon = radius_m / (M_PER_DEG * math.cos(math.radians(lat)))
@@ -227,7 +232,11 @@ def fetch_osm_graph(lat, lon, radius_m, profile="route", budget_s=60.0):
                     errors.append(f"{host}: HTTP {resp.status_code}")
                     _MIRROR_FAILED_AT[url] = time.time()
                     continue
-                G = _graph_from_overpass(resp.json())
+                data = resp.json()
+                del resp
+                G = _graph_from_overpass(data)
+                del data
+                gc.collect()
                 if len(_CACHE) >= _CACHE_MAX:
                     _CACHE.pop(next(iter(_CACHE)))
                 _CACHE[key] = (time.time(), G)

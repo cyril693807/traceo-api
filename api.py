@@ -14,6 +14,7 @@ import datetime
 import logging
 import math
 import os
+import threading
 import time
 
 import gpxpy
@@ -51,6 +52,8 @@ app.add_middleware(
 PUBLIC_SHAPES = ["heart", "star", "circle", "infinity", "triangle", "square", "diamond"]
 
 SHIFT_M = 1500
+HEAVY_LOCK = threading.Lock()
+MAX_RADIUS_M = 6500
 SEARCH_BUDGET_S = 45
 ROUTE_OVERHEAD = 1.4  # longueur réelle du parcours / longueur de la forme idéale
 
@@ -112,7 +115,8 @@ def shape_points(shape, length_km=None, width_m=5000.0):
 
 def area_radius(pts):
     """Rayon de la zone de routes à télécharger : forme + marge pour la décaler."""
-    return int(max(abs(c) for p in pts for c in p) * 1.2 + SHIFT_M + 300)
+    # plafonné : au-delà, le réseau ne tient pas dans la mémoire du serveur gratuit
+    return min(MAX_RADIUS_M, int(max(abs(c) for p in pts for c in p) * 1.2 + SHIFT_M + 300))
 
 
 # Les formes simples supportent mieux un réseau clairsemé que le cœur ou l'étoile,
@@ -120,8 +124,7 @@ def area_radius(pts):
 SIMPLE_SHAPES = {"circle", "triangle", "diamond", "square"}
 
 
-@app.get("/check")
-def check(
+def _check(
     lat: float = Query(..., ge=-90, le=90),
     lon: float = Query(..., ge=-180, le=180),
     length_km: float = Query(25, ge=10, le=45),
@@ -163,8 +166,7 @@ def check(
     return {"formes": result, "conseil": advice, "zone": level}
 
 
-@app.get("/generate")
-def generate(
+def _generate(
     lat: float = Query(..., ge=-90, le=90, description="Latitude du point de départ / centre"),
     lon: float = Query(..., ge=-180, le=180, description="Longitude du point de départ / centre"),
     shape: str = Query("heart", description=f"Forme : {', '.join(PUBLIC_SHAPES)}"),
@@ -281,3 +283,31 @@ def generate(
             "X-Profile": profile,
         },
     )
+
+
+@app.get("/check")
+def check(
+    lat: float = Query(..., ge=-90, le=90),
+    lon: float = Query(..., ge=-180, le=180),
+    length_km: float = Query(25, ge=10, le=45),
+    profile: str = Query("route"),
+):
+    # Un seul calcul lourd à la fois : deux réseaux routiers en mémoire en même
+    # temps dépassent les 512 Mo du serveur gratuit (le serveur redémarrait).
+    with HEAVY_LOCK:
+        return _check(lat=lat, lon=lon, length_km=length_km, profile=profile)
+
+
+@app.get("/generate")
+def generate(
+    lat: float = Query(..., ge=-90, le=90, description="Latitude du point de départ / centre"),
+    lon: float = Query(..., ge=-180, le=180, description="Longitude du point de départ / centre"),
+    shape: str = Query("heart", description=f"Forme : {', '.join(PUBLIC_SHAPES)}"),
+    length_km: float | None = Query(None, ge=10, le=45, description="Longueur visée du parcours en km (10-45). Prioritaire sur width_m."),
+    width_m: float = Query(5000, ge=1000, le=10000, description="Largeur de la forme en mètres, si length_km n'est pas donné."),
+    profile: str = Query("route", description="route = routes revêtues, vtt = chemins et pistes inclus"),
+):
+    # Un seul calcul lourd à la fois : deux réseaux routiers en mémoire en même
+    # temps dépassent les 512 Mo du serveur gratuit (le serveur redémarrait).
+    with HEAVY_LOCK:
+        return _generate(lat=lat, lon=lon, shape=shape, length_km=length_km, width_m=width_m, profile=profile)
