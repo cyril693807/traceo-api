@@ -696,7 +696,9 @@
       document.getElementById("stat-shape").textContent = quality ? `fidélité : ${quality}` : state.shape;
       readout.style.display = "flex";
 
-      let msg = "Parcours prêt : il suit les routes réelles. Le point vert marque le départ du tracé, qui peut être à quelques km de ton point choisi.";
+      let msg = "Parcours prêt : une boucle continue sur routes réelles, sans impasse, qui part de ton point de départ et y revient.";
+      const appr = parseFloat(resp.headers.get("x-approach-km") || "0");
+      if (appr >= 0.3) msg += ` Elle inclut ${appr.toFixed(1)} km de liaison pour rejoindre la forme (à l'aller et au retour).`;
       if (dev) msg += ` Écart moyen avec la forme idéale : ${Math.round(dev)} m.`;
       if (quality === "faible") msg += " Fidélité faible : essaie une longueur plus grande ou un départ plus proche d'une ville.";
       statusLine.textContent = msg;

@@ -282,6 +282,62 @@ def diagnose_overpass(lat=45.6064, lon=4.8332):
 # 2. Tracer la forme sur les routes
 # ----------------------------------------------------------------------------
 
+RETRACE_PENALTY = 6.0
+
+
+def ride_core(G):
+    """Réseau sans impasses : on retire, de proche en proche, les voies qui ne
+    mènent nulle part (cul-de-sac, chemin de ferme, parking). Un parcours tracé
+    sur ce réseau ne s'engage jamais dans une voie sans issue, donc il peut être
+    suivi d'un bout à l'autre à vélo. Calculé une fois et mémorisé dans G."""
+    core = G.graph.get("_core")
+    if core is not None:
+        return core
+    H = nx.Graph(G)
+    H.remove_edges_from(nx.selfloop_edges(H))
+    leaves = [n for n in H if H.degree(n) <= 1]
+    while leaves:
+        H.remove_nodes_from(leaves)
+        leaves = [n for n in H if H.degree(n) <= 1]
+    if H.number_of_nodes() < 30:
+        H = G
+    elif not nx.is_connected(H):
+        H = H.subgraph(max(nx.connected_components(H), key=len)).copy()
+    G.graph["_core"] = H
+    return H
+
+
+def connect_start(G, route, lat0, lon0):
+    """Fait partir et revenir le parcours du point de départ demandé : on rejoint
+    la boucle par le plus court chemin (liaison), on fait le tour, et on revient
+    par la même liaison. Retourne (parcours complet, longueur de la liaison en m)."""
+    kx = M_PER_DEG * math.cos(math.radians(lat0))
+    nodes = list(G.nodes)
+    px = np.array([(G.nodes[n]["x"] - lon0) * kx for n in nodes])
+    py = np.array([(G.nodes[n]["y"] - lat0) * M_PER_DEG for n in nodes])
+    start = nodes[int(np.argmin(np.hypot(px, py)))]
+
+    loop = list(route)
+    if loop[0] != loop[-1]:
+        try:
+            loop += nx.shortest_path(G, loop[-1], loop[0], weight="length")[1:]
+        except nx.NetworkXNoPath:
+            pass
+    on_loop = set(loop)
+    if start in on_loop:
+        join, approach, dist = start, [start], 0.0
+    else:
+        dist, path = nx.multi_source_dijkstra(G, on_loop, target=start, weight="length")
+        approach = list(reversed(path))       # départ -> boucle
+        join = approach[-1]
+    i = loop.index(join)
+    body = loop[:-1] if loop[0] == loop[-1] else loop
+    i = body.index(join)
+    tour = body[i:] + body[:i] + [join]
+    full = approach[:-1] + tour + list(reversed(approach[:-1]))
+    return full, float(dist)
+
+
 def _remove_spurs(route):
     """Supprime les allers-retours (A, B, A -> A) et les doublons consécutifs."""
     changed = True
@@ -374,6 +430,7 @@ def route_shape_on_roads(G, shape_pts_m, lat0, lon0,
 
     Retourne (liste de noeuds, dict de mesures de fidélité).
     """
+    G = ride_core(G)
     kx = M_PER_DEG * math.cos(math.radians(lat0))
     nodes = list(G.nodes)
     index = {n: i for i, n in enumerate(nodes)}
@@ -452,14 +509,36 @@ def route_shape_on_roads(G, shape_pts_m, lat0, lon0,
     sequence = pruned
 
     # --- assemblage du parcours --------------------------------------------
+    # Une rue déjà empruntée coûte beaucoup plus cher : le parcours préfère une
+    # rue parallèle plutôt que de revenir sur ses pas (sinon on obtient des
+    # allers-retours sur la même route, désagréables à vélo et qui cassent la forme).
+    used = {}        # tronçon -> numéro du segment qui l'a emprunté
+    seg_no = 0
+
+    def w_fn(u, v, d):
+        k = used.get((u, v))
+        # les 2 derniers segments sont exemptés : un petit aller-retour pour toucher
+        # un point est ensuite supprimé proprement (voir _remove_spurs)
+        return d["w"] * (RETRACE_PENALTY if k is not None and k < seg_no - 2 else 1.0)
+
     route = [sequence[0]]
     unreachable = 0
-    for a, b in zip(sequence[:-1], sequence[1:]):
+    targets = sequence[1:]
+    if sequence[0] != sequence[-1]:
+        targets = targets + [sequence[0]]          # la boucle se referme toujours
+    for b in targets:
+        a = route[-1]
+        if a == b:
+            continue
+        seg_no += 1
         try:
-            path = nx.shortest_path(G, a, b, weight="w")
+            path = nx.shortest_path(G, a, b, weight=w_fn)
         except nx.NetworkXNoPath:
             unreachable += 1
             continue
+        for u, v in zip(path[:-1], path[1:]):
+            used[(u, v)] = seg_no
+            used[(v, u)] = seg_no
         route.extend(path[1:])
     route = _remove_spurs(route)
     route = _remove_small_loops(route, lambda a, b: G[a][b]["length"])
@@ -520,6 +599,7 @@ def find_best_placements(G, shape_pts_m, lat0, lon0, top=3,
     candidate, la distance de la forme aux routes les plus proches (pas de calcul
     d'itinéraire). Retourne les `top` meilleures positions, forme déjà transformée.
     """
+    G = ride_core(G)
     kx = M_PER_DEG * math.cos(math.radians(lat0))
     # routes densifiées : un point tous les ~25 m le long de chaque tronçon
     pts_list = []
@@ -599,6 +679,7 @@ def check_shapes(G, shapes, lat0, lon0, max_shift_m=1500.0, step_m=750.0):
     dessinée ici : part de la forme qui longe une route allant dans la même
     direction (à 60 m et 35° près), pour la meilleure position d'un balayage grossier.
     Ne calcule aucun itinéraire : c'est une indication, pas une garantie."""
+    G = ride_core(G)
     kx = M_PER_DEG * math.cos(math.radians(lat0))
     idx = {n: i for i, n in enumerate(G.nodes)}
     xs = np.array([(G.nodes[n]["x"] - lon0) * kx for n in G.nodes])

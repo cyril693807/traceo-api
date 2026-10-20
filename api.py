@@ -25,7 +25,7 @@ from fastapi.responses import FileResponse, RedirectResponse, Response
 from gpx_shape_generator import SHAPES, _haversine_m
 from routing import (
     PROFILES, RoadDataUnavailable, RouteError,
-    check_shapes, diagnose_overpass, fetch_osm_graph, find_best_placements, route_shape_on_roads,
+    check_shapes, connect_start, diagnose_overpass, fetch_osm_graph, find_best_placements, route_shape_on_roads,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -44,7 +44,8 @@ app.add_middleware(
     allow_methods=["GET"],
     allow_headers=["*"],
     expose_headers=["Content-Disposition", "X-Quality", "X-Mean-Deviation-M",
-                    "X-Coverage-Pct", "X-Route-Km", "X-Profile"],
+                    "X-Coverage-Pct", "X-Route-Km", "X-Profile",
+                    "X-Shape-Km", "X-Approach-Km"],
 )
 
 PUBLIC_SHAPES = ["heart", "star", "circle", "infinity", "triangle", "square", "diamond"]
@@ -116,8 +117,7 @@ def area_radius(pts):
 
 # Les formes simples supportent mieux un réseau clairsemé que le cœur ou l'étoile,
 # dont la pointe et les creux doivent tomber pile sur des routes.
-SHAPE_TOLERANCE = {"circle": 12, "triangle": 8, "diamond": 8, "square": 6,
-                   "heart": 0, "star": 0, "infinity": 2}
+SIMPLE_SHAPES = {"circle", "triangle", "diamond", "square"}
 
 
 @app.get("/check")
@@ -141,20 +141,26 @@ def check(
         raise HTTPException(422, str(e))
     t0 = time.monotonic()
     raw = check_shapes(G, shapes, lat, lon, max_shift_m=SHIFT_M)
-    result = {}
-    for s, v in raw.items():
-        score = v + SHAPE_TOLERANCE.get(s, 0)
-        verdict = "conseillee" if score >= 70 else "possible" if score >= 52 else "deconseillee"
-        result[s] = {"score": round(score, 1), "verdict": verdict}
-    logger.info("check lat=%.4f lon=%.4f %skm %s : %s (%.1fs)", lat, lon, length_km, profile,
-                {k: v["verdict"] for k, v in result.items()}, time.monotonic() - t0)
-    advice = None
-    if all(r["verdict"] == "deconseillee" for r in result.values()):
-        advice = ("Peu de routes adaptées ici : les formes risquent d'être méconnaissables. "
-                  "Essaie le mode VTT, une longueur plus grande ou un départ plus proche d'une ville.")
-    elif not any(r["verdict"] == "conseillee" for r in result.values()):
-        advice = "Réseau routier assez clairsemé : préfère les formes simples (cercle, triangle, losange)."
-    return {"formes": result, "conseil": advice}
+    # L'estimation forme par forme est trop bruitée pour trancher seule ; on s'en sert
+    # pour juger la densité de la ZONE, puis on applique ce que les essais ont montré :
+    # les formes simples passent même quand les routes sont rares, pas le cœur ni l'étoile.
+    zone = sum(raw.values()) / len(raw)
+    level = "dense" if zone >= 58 else "moyen" if zone >= 44 else "clairseme"
+    table = {
+        "dense": {"simple": "conseillee", "complexe": "conseillee"},
+        "moyen": {"simple": "conseillee", "complexe": "possible"},
+        "clairseme": {"simple": "possible", "complexe": "deconseillee"},
+    }[level]
+    result = {s: {"verdict": table["simple" if s in SIMPLE_SHAPES else "complexe"]} for s in PUBLIC_SHAPES}
+    logger.info("check lat=%.4f lon=%.4f %skm %s : zone=%.0f (%s) détail=%s (%.1fs)", lat, lon, length_km,
+                profile, zone, level, raw, time.monotonic() - t0)
+    advice = {
+        "dense": None,
+        "moyen": "Routes moyennement denses : les formes simples (cercle, triangle, losange, carré) seront les plus nettes.",
+        "clairseme": ("Peu de routes adaptées ici : le cœur, l'étoile et l'infini risquent d'être méconnaissables. "
+                      "Préfère une forme simple, le mode VTT, ou un départ plus proche d'une ville."),
+    }[level]
+    return {"formes": result, "conseil": advice, "zone": level}
 
 
 @app.get("/generate")
@@ -210,11 +216,12 @@ def generate(
                 logger.exception("Echec du tracé")
                 continue
             ideal = mm["shape_km"]
-            if ideal > 0:
-                ratios.append(mm["route_km"] / ideal)
             km_err = abs(mm["route_km"] - target_km) / target_km
-            score = (mm["mean_dev_m"] / max(mm["coverage_pct"], 1.0) * (1.0 + 2.0 * km_err)
+            score = (mm["mean_dev_m"] / max(mm["coverage_pct"], 1.0) * (1.0 + 4.0 * km_err)
                      * (1.0 + mm.get("key_dev_m", 0.0) / 120.0))
+            if ideal > 0:
+                # rapport longueur réelle / forme idéale, mesuré sur les meilleurs tracés
+                ratios.append((mm["mean_dev_m"] / max(mm["coverage_pct"], 1.0), mm["route_km"] / ideal))
             if best is None or score < best[0]:
                 best = (score, r, mm, p)
         return ratios
@@ -223,14 +230,18 @@ def generate(
     ratios = attempt(pts, 3)
     # Tour 2 : on recale la taille de la forme pour tomber sur la longueur demandée.
     if ratios and time.monotonic() - t0 < SEARCH_BUDGET_S:
-        ratio = sorted(ratios)[len(ratios) // 2]
-        k = min(1.25, max(0.5, target_km / (ratio * ideal_km)))
+        ratio = min(ratios)[1]
+        k = min(1.6, max(0.5, target_km / (ratio * ideal_km)))
         if abs(k - 1.0) > 0.08:
             logger.info("recalage de la taille : x%.2f (parcours réel / forme idéale = %.2f)", k, ratio)
             attempt([(x * k, y * k) for x, y in pts], 4)
     if best is None:
         raise HTTPException(422, "Impossible de tracer cette forme ici. Essaie une zone plus urbaine ou une autre longueur.")
     _, route, m, chosen = best
+    # Départ et retour au point choisi par l'utilisateur
+    route, approach_m = connect_start(G, route, lat, lon)
+    m["approach_km"] = round(approach_m / 1000.0, 2)
+    m["total_km"] = round(m["route_km"] + 2 * approach_m / 1000.0, 2)
     logger.info("durée recherche+tracé %.1fs", time.monotonic() - t0)
     logger.info("position retenue dx=%s dy=%s échelle=%s rot=%s cible=%.0fkm", chosen["dx"], chosen["dy"], chosen["scale"], chosen["rot"], target_km)
 
@@ -264,7 +275,9 @@ def generate(
             "X-Quality": m["quality"],
             "X-Mean-Deviation-M": str(m["mean_dev_m"]),
             "X-Coverage-Pct": str(m["coverage_pct"]),
-            "X-Route-Km": str(m["route_km"]),
+            "X-Route-Km": str(m["total_km"]),
+            "X-Shape-Km": str(m["route_km"]),
+            "X-Approach-Km": str(m["approach_km"]),
             "X-Profile": profile,
         },
     )
