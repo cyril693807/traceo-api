@@ -10,8 +10,10 @@ claire (503) : elle ne fabrique JAMAIS un faux tracé qui ne suivrait aucune rou
 Lancer en local :  uvicorn api:app --reload   puis ouvrir http://127.0.0.1:8000/docs
 """
 
+import datetime
 import logging
 import math
+import time
 
 import gpxpy
 import gpxpy.gpx
@@ -19,7 +21,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, Response
 
-from gpx_shape_generator import SHAPES
+from gpx_shape_generator import SHAPES, _haversine_m
 from routing import (
     PROFILES, RoadDataUnavailable, RouteError,
     diagnose_overpass, fetch_osm_graph, route_shape_on_roads,
@@ -45,6 +47,13 @@ app.add_middleware(
 )
 
 PUBLIC_SHAPES = ["heart", "star", "circle", "infinity"]
+
+SHIFT_M = 1000
+SEARCH_BUDGET_S = 40
+# (décalage est, décalage nord, échelle) : essayés dans l'ordre, on garde le meilleur
+CANDIDATES = [(0, 0, 1.0)] + [(dx, dy, 1.0) for dx, dy in
+    [(700, 0), (-700, 0), (0, 700), (0, -700), (700, 700), (-700, 700), (700, -700), (-700, -700),
+     (1000, 0), (-1000, 0), (0, 1000), (0, -1000)]] + [(0, 0, 1.2), (0, 0, 0.85)]
 
 
 @app.get("/", include_in_schema=False)
@@ -80,8 +89,8 @@ def generate(
     fn = SHAPES[shape]
     pts = fn(n_points=240, radius_m=width_m / 2) if shape == "circle" else fn(n_points=240, width_m=width_m)
 
-    # 2. Vraies routes autour (zone = forme + marge)
-    radius = int(max(abs(c) for p in pts for c in p) + 500)
+    # 2. Vraies routes autour (zone = forme + marge pour pouvoir décaler la forme)
+    radius = int(max(abs(c) for p in pts for c in p) + 500 + SHIFT_M)
     try:
         G = fetch_osm_graph(lat, lon, radius, profile)
     except RoadDataUnavailable as e:
@@ -89,23 +98,50 @@ def generate(
     except RouteError as e:
         raise HTTPException(422, str(e))
 
-    # 3. Tracer la forme sur ces routes
-    try:
-        route, m = route_shape_on_roads(G, pts, lat, lon)
-    except RouteError as e:
-        raise HTTPException(422, str(e))
-    except Exception:
-        logger.exception("Echec du tracé")
-        raise HTTPException(500, "Erreur interne pendant le calcul du parcours.")
+    # 3. Tracer la forme sur ces routes. Le réseau routier n'est pas régulier :
+    #    on essaie quelques décalages / tailles et on garde le tracé le plus fidèle.
+    t0 = time.monotonic()
+    best = None
+    for dx, dy, k in CANDIDATES:
+        if best is not None and time.monotonic() - t0 > SEARCH_BUDGET_S:
+            break
+        cand = [(x * k + dx, y * k + dy) for x, y in pts]
+        try:
+            r, mm = route_shape_on_roads(G, cand, lat, lon)
+        except RouteError:
+            continue
+        except Exception:
+            logger.exception("Echec du tracé")
+            continue
+        score = mm["mean_dev_m"] / max(mm["coverage_pct"], 1.0)
+        if best is None or score < best[0]:
+            best = (score, r, mm, (dx, dy, k))
+        if mm["quality"] == "bon":
+            break
+    if best is None:
+        raise HTTPException(422, "Impossible de tracer cette forme ici. Essaie une forme plus grande ou une zone plus urbaine.")
+    _, route, m, chosen = best
+    logger.info("candidat retenu dx=%s dy=%s échelle=%s", *chosen)
 
-    # 4. GPX
+    # 4. GPX (sans doublons consécutifs, avec altitude et heure fictives :
+    #    certains services, dont Garmin Connect, rejettent les traces sans ces champs)
     gpx = gpxpy.gpx.GPX()
     track = gpxpy.gpx.GPXTrack(name=f"Traceo - {shape}")
     gpx.tracks.append(track)
     seg = gpxpy.gpx.GPXTrackSegment()
     track.segments.append(seg)
+    t = datetime.datetime(2026, 1, 1, 8, 0, 0, tzinfo=datetime.timezone.utc)
+    prev = None
+    prev_xy = None
     for n in route:
-        seg.points.append(gpxpy.gpx.GPXTrackPoint(G.nodes[n]["y"], G.nodes[n]["x"]))
+        xy = (G.nodes[n]["y"], G.nodes[n]["x"])
+        if xy == prev_xy:
+            continue
+        if prev_xy is not None:
+            d = _haversine_m(prev_xy[0], prev_xy[1], xy[0], xy[1])
+            t += datetime.timedelta(seconds=max(1, round(d / 5.5)))  # ~20 km/h, secondes entières
+        seg.points.append(gpxpy.gpx.GPXTrackPoint(round(xy[0], 6), round(xy[1], 6), elevation=0, time=t))
+        prev_xy = xy
 
     logger.info("shape=%s profile=%s qualité=%s écart=%.0fm couverture=%.0f%% %.1fkm | détail=%s | réseau utilisé=%d nœuds",
                 shape, profile, m["quality"], m["mean_dev_m"], m["coverage_pct"], m["route_km"], m, G.number_of_nodes())
