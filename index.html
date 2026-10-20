@@ -43,6 +43,39 @@ header h1{font-family:var(--f-display);font-weight:700;font-size:30px;line-heigh
 .install b{display:block;font-size:14.5px}
 .install button{all:unset;cursor:pointer;background:var(--accent);color:var(--accent-ink);font-weight:600;padding:10px 16px;border-radius:10px;white-space:nowrap}
 .install button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.tabs{display:grid;grid-template-columns:1fr 1fr;gap:4px;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:4px}
+.tabs button{all:unset;box-sizing:border-box;cursor:pointer;text-align:center;padding:9px;border-radius:9px;font-family:var(--f-display);font-weight:600;font-size:18px;touch-action:manipulation}
+.tabs button[aria-selected="true"]{background:var(--ink);color:var(--surface)}
+.tabs button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.view{display:grid;gap:20px}
+.months.tpts{grid-template-columns:repeat(4,minmax(0,1fr))}
+.months.tpts button b{font-size:17px}
+.tcard{background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:16px;min-width:0}
+.tcard h2{font-family:var(--f-display);font-size:22px;font-weight:600;margin:0}
+.tcard .sub{margin:4px 0 0;font-size:13px;color:var(--muted)}
+.trow{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px 12px;align-items:center;padding:12px 0;border-top:1px solid var(--line)}
+.tcard h2+.sub+.trow{border-top:0}
+.trow .tn{font-weight:600}
+.trow .th,.trow .tprev,.trow .chrono{grid-column:1/-1}
+.trow .th{font-size:12.5px;color:var(--muted);margin-top:-2px}
+.tin{display:flex;align-items:center;gap:6px}
+.tin input{width:84px;font:600 20px/1 var(--f-display);font-variant-numeric:tabular-nums;text-align:right;padding:8px 10px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--ink)}
+.tin input:focus{outline:2px solid var(--accent);outline-offset:1px}
+.tin span{font-size:13px;color:var(--muted);min-width:30px}
+.tprev{font-size:12.5px;color:var(--muted);font-variant-numeric:tabular-nums}
+.tprev:empty{display:none}
+.tprev .up{color:var(--accent);font-weight:600}.tprev .down{color:var(--rest);font-weight:600}
+.chrono{all:unset;justify-self:start;cursor:pointer;font-size:13px;font-weight:600;color:var(--accent);border:1px solid var(--accent);border-radius:999px;padding:6px 12px;font-variant-numeric:tabular-nums}
+.chrono:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.tverd{display:flex;gap:14px;align-items:center}
+.tverd .big{font-family:var(--f-display);font-weight:700;font-size:44px;line-height:1;font-variant-numeric:tabular-nums}
+.tverd p{margin:0}
+.tverd.ok .big{color:var(--accent)}.tverd.no .big{color:var(--rest)}
+.twrap{overflow-x:auto;margin-top:8px}
+.thist{border-collapse:collapse;width:100%;font-size:13.5px;font-variant-numeric:tabular-nums}
+.thist th,.thist td{padding:7px 6px;text-align:right;border-bottom:1px solid var(--line);white-space:nowrap}
+.thist th:first-child,.thist td:first-child{text-align:left;white-space:normal}
+.thist th{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);font-weight:600}
 header p{margin:4px 0 0;color:var(--muted);font-size:14px}
 .label{font-size:11px;font-weight:600;letter-spacing:.09em;text-transform:uppercase;color:var(--muted)}
 .months{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:4px}
@@ -121,6 +154,12 @@ footer{font-size:12.5px;color:var(--muted);max-width:70ch}
 
   <div class="install" id="install" hidden><p><b>Installer l'appli</b><span id="installTxt">Ajoute Force et Souplesse à ton écran d'accueil.</span></p><button id="installBtn" hidden>Installer</button></div>
 
+  <nav class="tabs" role="tablist" aria-label="Écrans">
+    <button role="tab" id="tabSeance" aria-selected="true" data-v="seance">Séances</button>
+    <button role="tab" id="tabTests" aria-selected="false" data-v="tests">Tests</button>
+  </nav>
+
+  <div id="viewSeance" class="view">
   <section aria-label="Choix de la séance">
     <div class="label" style="margin-bottom:6px">Bloc du mois · touche un mois puis une séance</div>
     <div class="months" role="tablist" id="months"></div>
@@ -163,6 +202,23 @@ footer{font-size:12.5px;color:var(--muted);max-width:70ch}
   </div>
 
   <footer>Effort visé 6 à 7 sur 10 : une tension franche, jamais de douleur vive. Si ça pince dans l'articulation, passe à l'exercice suivant. Pose le téléphone face à toi, son activé : la voix décrit chaque exercice avant de commencer, la musique tourne pendant la séance (plus douce aux repos), et trois bips marquent la fin. Les deux boutons à droite coupent la musique ou la voix.</footer>
+  </div>
+
+  <div id="viewTests" class="view" hidden>
+    <section class="tcard">
+      <h2>Tests de mobilité</h2>
+      <p class="sub">À faire avant de commencer, puis en fin de semaine 4 de chaque mois. 3 tests sur 5 en progrès : tu passes au mois suivant.</p>
+      <div class="label" style="margin:12px 0 6px">Moment du test</div>
+      <div class="months tpts" id="tpoints" role="tablist"></div>
+    </section>
+    <section class="tcard" id="tform" aria-label="Saisie des résultats"></section>
+    <section class="tcard" id="tverdict" aria-live="polite"></section>
+    <section class="tcard">
+      <h2>Historique</h2>
+      <div class="twrap"><table class="thist" id="thist"></table></div>
+      <p class="sub" style="margin-top:8px">Les résultats restent enregistrés sur ce téléphone.</p>
+    </section>
+  </div>
 </div>
 
 <script>
@@ -551,6 +607,7 @@ $('music').onclick=()=>{const v=music.toggle();$('music').setAttribute('aria-pre
 $('voice').setAttribute('aria-pressed',voiceOn);
 $('voice').onclick=()=>{voiceOn=!voiceOn;store.set('cfs-voice',voiceOn?'1':'0');$('voice').setAttribute('aria-pressed',voiceOn);if(!voiceOn)stopVoice()};
 document.addEventListener('visibilitychange',()=>{if(document.hidden&&running)pause()});
+document.addEventListener('fs-pause',()=>{if(running)pause()});
 
 let last=performance.now(), animT=0;
 function tick(now){
@@ -642,6 +699,115 @@ requestAnimationFrame(t=>{last=t;tick(t)});
 })();
 </script>
 <script>if('serviceWorker' in navigator){addEventListener('load',()=>navigator.serviceWorker.register('sw.js').catch(()=>{}))}</script>
+<script>
+(function(){
+"use strict";
+const $=id=>document.getElementById(id);
+const KEY='fs-tests-v1';
+const POINTS=[['p0','Départ','Avant'],['p1','Fin M1','Mois 1'],['p2','Fin M2','Mois 2'],['p3','Fin M3','Mois 3']];
+/* better: +1 = plus haut c'est mieux, -1 = plus bas c'est mieux */
+const TESTS=[
+  {id:'squat',n:'Accroupi talons au sol',u:'s',better:1,max:120,step:1,
+   h:"Temps tenu sans support, 2 min maximum.",chrono:'up'},
+  {id:'n90',n:'Transitions 90/90',u:'',better:1,step:1,
+   h:"Nombre de passages d'un côté à l'autre en 30 s, sans les mains.",chrono:'down30'},
+  {id:'flex',n:'Flexion avant',u:'cm',better:-1,step:.5,
+   h:"Debout jambes tendues : distance doigts-sol. Négatif si tu dépasses le sol."},
+  {id:'couch',n:'Couch stretch',u:'cm',better:-1,step:.5,
+   h:"Genou contre le mur, buste droit : distance talon-fesse."},
+  {id:'ankle',n:'Cheville genou-mur',u:'cm',better:1,step:.5,
+   h:"Distance max orteils-mur, genou qui touche le mur, talon au sol. Note le côté le plus faible."}
+];
+function load(){try{return JSON.parse(localStorage.getItem(KEY))||{}}catch(e){return {}}}
+function save(d){try{localStorage.setItem(KEY,JSON.stringify(d))}catch(e){}}
+let data=load();
+let point=(()=>{for(let i=POINTS.length-1;i>=0;i--){const v=data[POINTS[i][0]];if(v&&Object.keys(v).length) return POINTS[Math.min(i+1,POINTS.length-1)][0]}return 'p0'})();
+if(data[point]&&Object.keys(data[point]).length===TESTS.length) point=point;
+const fmt=v=>v===undefined||v===null||v===''?'–':(Math.round(v*10)/10).toString().replace('.',',');
+function prevPoint(p){const i=POINTS.findIndex(x=>x[0]===p);for(let j=i-1;j>=0;j--){if(data[POINTS[j][0]]&&Object.keys(data[POINTS[j][0]]).length) return POINTS[j]}return null}
+function cmp(t,a,b){if(a===undefined||b===undefined)return 0;const d=(b-a)*t.better;return d>0?1:d<0?-1:0}
+
+function renderPoints(){
+  $('tpoints').innerHTML=POINTS.map(([k,n,s])=>`<button role="tab" id="tp_${k}" aria-selected="${k===point}" data-p="${k}"><b>${n}</b><span>${data[k]&&Object.keys(data[k]).length?'Noté':s}</span></button>`).join('');
+}
+function renderForm(){
+  const cur=data[point]||{}, pv=prevPoint(point), pd=pv?data[pv[0]]:null;
+  $('tform').innerHTML=`<h2>${POINTS.find(x=>x[0]===point)[1]}</h2><p class="sub">${pv?'Comparé à « '+pv[1]+' ».':'Ta référence de départ.'}</p>`+
+  TESTS.map(t=>{
+    const v=cur[t.id], c=pd?cmp(t,pd[t.id],v):0;
+    const prev=pd&&pd[t.id]!==undefined?`<span class="tprev">Avant : ${fmt(pd[t.id])}${t.u?' '+t.u:''} ${c>0?'<span class="up">▲ mieux</span>':c<0?'<span class="down">▼ moins bien</span>':v!==undefined?'= pareil':''}</span>`:'<span class="tprev"></span>';
+    return `<div class="trow"><span class="tn">${t.n}</span>
+      <label class="tin" for="in_${t.id}"><input id="in_${t.id}" type="number" inputmode="decimal" step="${t.step}" ${t.max?'max="'+t.max+'"':''} value="${v===undefined?'':v}" data-t="${t.id}" aria-label="${t.n}"><span>${t.u||'fois'}</span></label>
+      <span class="th">${t.h}</span>
+      ${t.chrono?`<button class="chrono" data-c="${t.id}" id="ch_${t.id}">${t.chrono==='up'?'Lancer le chrono':'Lancer le compte à rebours de 30 s'}</button>`:''}
+      ${prev}</div>`;
+  }).join('');
+  $('tform').querySelectorAll('input').forEach(inp=>inp.addEventListener('input',()=>{
+    const d=data[point]=data[point]||{}; const raw=inp.value.replace(',','.');
+    if(raw==='') delete d[inp.dataset.t]; else { const n=parseFloat(raw); if(!isNaN(n)) d[inp.dataset.t]=n; }
+    if(!Object.keys(d).length) delete data[point];
+    save(data); renderPoints(); renderVerdict(); renderHist();
+    const t=TESTS.find(x=>x.id===inp.dataset.t), pv2=prevPoint(point), row=inp.closest('.trow').querySelector('.tprev');
+    if(pv2&&row){const pd2=data[pv2[0]], c=cmp(t,pd2[t.id],d[t.id]);row.innerHTML=pd2[t.id]!==undefined?`Avant : ${fmt(pd2[t.id])}${t.u?' '+t.u:''} ${c>0?'<span class="up">▲ mieux</span>':c<0?'<span class="down">▼ moins bien</span>':d[t.id]!==undefined?'= pareil':''}`:''}
+  }));
+  $('tform').querySelectorAll('.chrono').forEach(b=>b.onclick=()=>chrono(b));
+}
+function renderVerdict(){
+  const cur=data[point]||{}, pv=prevPoint(point), el=$('tverdict');
+  const n=Object.keys(cur).length;
+  if(point==='p0'||!pv){el.innerHTML=`<div class="tverd"><span class="big">${n}/5</span><p><b>Tests de départ notés.</b><br>${n<5?'Complète les 5 tests, ce sont tes repères pour la suite.':'Ce sont tes repères. Refais les tests en fin de semaine 4 du mois 1.'}</p></div>`;return}
+  if(!n){el.innerHTML=`<div class="tverd"><span class="big">–</span><p><b>Pas encore de résultats pour « ${POINTS.find(x=>x[0]===point)[1]} ».</b><br>Fais les 5 tests en fin de semaine 4, puis note-les ici.</p></div>`;return}
+  const pd=data[pv[0]]; let up=0, both=0;
+  TESTS.forEach(t=>{if(cur[t.id]!==undefined&&pd[t.id]!==undefined){both++; if(cmp(t,pd[t.id],cur[t.id])>0) up++}});
+  const m=+point[1], ok=up>=3, done=both===5||(up>=3);
+  const next=m<3?`au mois ${m+1}`:'à un bloc 4 sur mesure (demande-le à Claude avec tes résultats)';
+  el.innerHTML=`<div class="tverd ${done?(ok?'ok':'no'):''}"><span class="big">${up}/5</span><p><b>${ok?'Validé : passe '+next+'.':both<5?'Tests en progrès : '+up+' sur '+both+' saisis.':'Pas encore : refais le mois '+m+'.'}</b><br>${ok?'Au moins 3 tests progressent depuis « '+pv[1]+' ».':both<5?'Il en faut 3 en progrès pour passer au mois suivant.':'Moins de 3 tests progressent. Un mois de plus consolide les acquis, c’est normal.'}</p></div>`;
+}
+function renderHist(){
+  const cols=POINTS.filter(p=>data[p[0]]&&Object.keys(data[p[0]]).length);
+  if(!cols.length){$('thist').innerHTML='<tbody><tr><td>Aucun test noté pour l’instant.</td></tr></tbody>';return}
+  $('thist').innerHTML=`<thead><tr><th>Test</th>${cols.map(c=>`<th>${c[1]}</th>`).join('')}</tr></thead><tbody>`+
+    TESTS.map(t=>`<tr><td>${t.n}${t.u?' ('+t.u+')':''}</td>${cols.map(c=>`<td>${fmt(data[c[0]][t.id])}</td>`).join('')}</tr>`).join('')+'</tbody>';
+}
+
+/* Chronos : bips via Web Audio, lancés depuis le bouton */
+let ac=null, run=null;
+function bip(f,d){try{ac=ac||new (window.AudioContext||window.webkitAudioContext)();const o=ac.createOscillator(),g=ac.createGain();o.frequency.value=f;g.gain.setValueAtTime(.0001,ac.currentTime);g.gain.exponentialRampToValueAtTime(.4,ac.currentTime+.02);g.gain.exponentialRampToValueAtTime(.0001,ac.currentTime+d);o.connect(g);g.connect(ac.destination);o.start();o.stop(ac.currentTime+d+.05)}catch(e){}}
+function chrono(b){
+  const t=TESTS.find(x=>x.id===b.dataset.c), inp=$('in_'+t.id);
+  if(run&&run.b===b){ /* arrêt */
+    clearInterval(run.iv); const el=(performance.now()-run.t0)/1000;
+    if(t.chrono==='up'){inp.value=Math.min(t.max,Math.round(el));inp.dispatchEvent(new Event('input'))}
+    b.textContent=t.chrono==='up'?'Relancer le chrono':'Relancer le compte à rebours de 30 s'; run=null; return;
+  }
+  if(run){clearInterval(run.iv); run.b.textContent='Lancer'; run=null}
+  try{ac=ac||new (window.AudioContext||window.webkitAudioContext)();ac.resume&&ac.resume()}catch(e){}
+  bip(880,.2);
+  const t0=performance.now(); run={b,t0};
+  run.iv=setInterval(()=>{
+    const el=(performance.now()-t0)/1000;
+    if(t.chrono==='up'){
+      b.textContent=`${Math.floor(el)} s · touche pour arrêter`;
+      if(el>=t.max){clearInterval(run.iv);run=null;bip(990,.4);inp.value=t.max;inp.dispatchEvent(new Event('input'));b.textContent='2 min atteintes, bravo'}
+    } else {
+      const r=Math.ceil(30-el); b.textContent=`${Math.max(0,r)} s · compte tes passages`;
+      if(r<=3&&r>=1&&run&&run.last!==r){run.last=r;bip(660,.1)}
+      if(el>=30){clearInterval(run.iv);run=null;bip(990,.5);b.textContent='Terminé : note ton nombre';inp.focus()}
+    }
+  },200);
+}
+
+$('tpoints').addEventListener('click',e=>{const p=e.target.closest('[data-p]');if(!p)return;point=p.dataset.p;renderPoints();renderForm();renderVerdict()});
+function show(v){
+  ['seance','tests'].forEach(k=>{const on=k===v;$('view'+(k==='seance'?'Seance':'Tests')).hidden=!on;$('tab'+(k==='seance'?'Seance':'Tests')).setAttribute('aria-selected',on)});
+  if(v==='tests'){document.dispatchEvent(new Event('fs-pause'));renderPoints();renderForm();renderVerdict();renderHist()}
+  try{localStorage.setItem('fs-view',v)}catch(e){}
+}
+document.querySelector('.tabs').addEventListener('click',e=>{const b=e.target.closest('[data-v]');if(b)show(b.dataset.v)});
+let start='seance';try{start=location.hash==='#tests'?'tests':(localStorage.getItem('fs-view')||'seance')}catch(e){}
+show(start);
+})();
+</script>
 <script>
 (function(){
   const box=document.getElementById('install'),btn=document.getElementById('installBtn'),txt=document.getElementById('installTxt');
