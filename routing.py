@@ -38,8 +38,11 @@ M_PER_DEG = 111_320.0
 
 OVERPASS_MIRRORS = [
     "https://overpass-api.de/api/interpreter",
+    "https://z.overpass-api.de/api/interpreter",
+    "https://lz4.overpass-api.de/api/interpreter",
     "https://overpass.kumi.systems/api/interpreter",
     "https://overpass.private.coffee/api/interpreter",
+    "https://overpass.openstreetmap.fr/api/interpreter",
 ]
 
 HEADERS = {
@@ -201,6 +204,7 @@ def fetch_osm_graph(lat, lon, radius_m, profile="route", budget_s=60.0):
                 raise
             except Exception as e:  # réseau, JSON invalide, serveur surchargé...
                 errors.append(f"{host}: {type(e).__name__}")
+                logger.warning("Overpass %s : %s %s", host, type(e).__name__, str(e)[:160])
         if time.monotonic() >= deadline - 5:
             break
         time.sleep(2)
@@ -214,23 +218,31 @@ def fetch_osm_graph(lat, lon, radius_m, profile="route", budget_s=60.0):
 
 def diagnose_overpass(lat=45.6064, lon=4.8332):
     """Test rapide de chaque serveur OpenStreetMap, pour voir lequel répond
-    depuis l'hébergement (utile pour comprendre une panne)."""
+    depuis l'hébergement (utile pour comprendre une panne). Les serveurs sont
+    testés en parallèle, avec le détail de l'erreur."""
+    from concurrent.futures import ThreadPoolExecutor
+
     query = f"[out:json][timeout:10];node(around:300,{lat},{lon});out count;"
-    results = []
-    for url in OVERPASS_MIRRORS:
+
+    def probe(url):
         t0 = time.monotonic()
         entry = {"serveur": url.split("/")[2]}
         try:
-            r = requests.post(url, data={"data": query}, headers=HEADERS, timeout=15)
+            r = requests.post(url, data={"data": query}, headers=HEADERS, timeout=(8, 20))
             entry["http"] = r.status_code
             entry["ok"] = r.status_code == 200
+            if r.status_code != 200:
+                entry["reponse"] = r.text[:150].replace("\n", " ")
         except Exception as e:
             entry["http"] = None
             entry["ok"] = False
             entry["erreur"] = type(e).__name__
+            entry["detail"] = str(e)[:200]
         entry["ms"] = int((time.monotonic() - t0) * 1000)
-        results.append(entry)
-    return results
+        return entry
+
+    with ThreadPoolExecutor(max_workers=len(OVERPASS_MIRRORS)) as pool:
+        return list(pool.map(probe, OVERPASS_MIRRORS))
 
 
 # ----------------------------------------------------------------------------
