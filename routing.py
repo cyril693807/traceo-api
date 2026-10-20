@@ -292,6 +292,8 @@ def diagnose_overpass(lat=45.6064, lon=4.8332):
 # ----------------------------------------------------------------------------
 
 RETRACE_PENALTY = 6.0
+STRAY_CAP = 12.0
+CORRIDOR_M = 1200.0
 
 
 def ride_core(G):
@@ -302,12 +304,23 @@ def ride_core(G):
     core = G.graph.get("_core")
     if core is not None:
         return core
-    H = nx.Graph(G)
-    H.remove_edges_from(nx.selfloop_edges(H))
-    leaves = [n for n in H if H.degree(n) <= 1]
-    while leaves:
-        H.remove_nodes_from(leaves)
-        leaves = [n for n in H if H.degree(n) <= 1]
+    # On "épluche" les impasses de proche en proche (sans copier tout le réseau).
+    deg = {n: sum(1 for m in G[n] if m != n) for n in G}
+    stack = [n for n, d in deg.items() if d <= 1]
+    removed = set()
+    while stack:
+        n = stack.pop()
+        if n in removed:
+            continue
+        removed.add(n)
+        for m in G[n]:
+            if m != n and m not in removed:
+                deg[m] -= 1
+                if deg[m] <= 1:
+                    stack.append(m)
+    H = G.subgraph([n for n in G if n not in removed]).copy()
+    H.remove_edges_from(list(nx.selfloop_edges(H)))
+    H.graph.pop("_core", None)
     if H.number_of_nodes() < 30:
         H = G
     elif not nx.is_connected(H):
@@ -423,6 +436,63 @@ def _remove_small_loops(route, length_of, max_loop_m=600.0):
     return out
 
 
+def _remove_thin_excursions(G, route, xy, close_m=120.0, max_len_m=8000.0, min_len_m=150.0,
+                            thin_m=45.0, passes=3):
+    """Supprime les "pointes" : le parcours part sur une route et revient presque au
+    même endroit par la même route ou une voie parallèle (chaussées séparées, contre-
+    allée). On les repère géométriquement : deux passages à moins de close_m l'un de
+    l'autre, reliés par un aller-retour qui n'entoure quasiment aucune surface
+    (largeur moyenne < thin_m). On remplace l'aller-retour par la liaison directe."""
+    for _ in range(passes):
+        n = len(route)
+        if n < 4:
+            break
+        P = np.array([xy[v] for v in route])
+        x, y = P[:, 0], P[:, 1]
+        cum = np.concatenate([[0.0], np.cumsum(np.hypot(np.diff(x), np.diff(y)))])
+        # somme cumulée du "shoelace" : aire d'un morceau de parcours en O(1)
+        cross = x[:-1] * y[1:] - x[1:] * y[:-1]
+        S = np.concatenate([[0.0], np.cumsum(cross)])
+        tree = shapely.STRtree(shapely.points(P))
+        ii, jj = tree.query(shapely.points(P), predicate="dwithin", distance=close_m)
+        keep = jj > ii + 2
+        ii, jj = ii[keep], jj[keep]
+        L = cum[jj] - cum[ii]
+        keep = (L > min_len_m) & (L < max_len_m) & ~((ii == 0) & (jj == n - 1))
+        ii, jj, L = ii[keep], jj[keep], L[keep]
+        area = 0.5 * np.abs(S[jj] - S[ii] + x[jj] * y[ii] - x[ii] * y[jj])
+        keep = area / L < thin_m
+        ii, jj, L = ii[keep], jj[keep], L[keep]
+        if len(ii) == 0:
+            break
+        # pour chaque départ i, l'aller-retour le plus long ; puis on avance sans chevauchement
+        best = {}
+        for i, j, l in zip(ii.tolist(), jj.tolist(), L.tolist()):
+            if j > best.get(i, (-1, 0))[0]:
+                best[i] = (j, l)
+        out, pos, changed = [], 0, False
+        for i in sorted(best):
+            if i < pos:
+                continue
+            j, l = best[i]
+            try:
+                link = nx.shortest_path(G, route[i], route[j], weight="length")
+            except nx.NetworkXNoPath:
+                continue
+            link_len = sum(G[u][v]["length"] for u, v in zip(link[:-1], link[1:]))
+            if link_len > 0.5 * l:
+                continue
+            out.extend(route[pos:i])
+            out.extend(link[:-1])
+            pos = j
+            changed = True
+        out.extend(route[pos:])
+        route = out
+        if not changed:
+            break
+    return route
+
+
 def _samples(line, step=20.0):
     k = max(2, int(line.length // step) + 1)
     return shapely.line_interpolate_point(line, np.linspace(0.0, line.length, k))
@@ -451,6 +521,21 @@ def route_shape_on_roads(G, shape_pts_m, lat0, lon0,
         pts.append(pts[0])
     line = LineString(pts)
 
+    # --- on ne garde que les routes dans un couloir autour de la forme ---------
+    # (beaucoup moins de calculs : le réseau téléchargé est bien plus grand)
+    key = ("_nodetree", round(lat0, 6), round(lon0, 6))
+    if key not in G.graph:
+        G.graph[key] = shapely.STRtree(shapely.points(np.column_stack([px, py])))
+    sel = G.graph[key].query(line, predicate="dwithin", distance=CORRIDOR_M)
+    if len(sel) > 50:
+        sub = G.subgraph([nodes[i] for i in sel])
+        comp = max(nx.connected_components(sub), key=len)
+        G = G.subgraph(comp).copy()
+        nodes = list(G.nodes)
+        index = {n: i for i, n in enumerate(nodes)}
+        px = np.array([(G.nodes[n]["x"] - lon0) * kx for n in nodes])
+        py = np.array([(G.nodes[n]["y"] - lat0) * M_PER_DEG for n in nodes])
+
     # --- coût des tronçons -------------------------------------------------
     edges = list(G.edges(data=True))
     iu = np.array([index[u] for u, _, _ in edges])
@@ -461,7 +546,9 @@ def route_shape_on_roads(G, shape_pts_m, lat0, lon0,
     d_m = shapely.distance(shapely.points(mid), line)
     d_edge = (d_u + 2 * d_m + d_v) / 4.0
     for (u, v, data), d in zip(edges, d_edge):
-        data["w"] = data["length"] * data.get("mult", 1.0) * (1.0 + (d / stray_m) ** 2)
+        # Plafonné : sinon s'écarter de 300 m coûte si cher que l'itinéraire préfère
+        # refaire tout le tour de la forme (vu : 23 km pour relier deux points à 250 m).
+        data["w"] = data["length"] * data.get("mult", 1.0) * min(1.0 + (d / stray_m) ** 2, STRAY_CAP)
 
     # --- points d'ancrage le long de la forme -------------------------------
     n_anchor = max(12, int(round(line.length / anchor_spacing_m)))
@@ -545,12 +632,21 @@ def route_shape_on_roads(G, shape_pts_m, lat0, lon0,
         except nx.NetworkXNoPath:
             unreachable += 1
             continue
+        # Garde-fou : un chemin démesuré par rapport à la distance à vol d'oiseau est
+        # un détour absurde -> on prend plutôt le plus court chemin réel.
+        crow = math.hypot(px[index[a]] - px[index[b]], py[index[a]] - py[index[b]])
+        plen = sum(G[u][v]["length"] for u, v in zip(path[:-1], path[1:]))
+        if plen > 3.0 * crow + 800.0:
+            path = nx.shortest_path(G, a, b, weight="length")
         for u, v in zip(path[:-1], path[1:]):
             used[(u, v)] = seg_no
             used[(v, u)] = seg_no
         route.extend(path[1:])
     route = _remove_spurs(route)
     route = _remove_small_loops(route, lambda a, b: G[a][b]["length"])
+    route = _remove_spurs(route)
+    xy = {v: (px[i], py[i]) for v, i in index.items()}
+    route = _remove_thin_excursions(G, route, xy)
     route = _remove_spurs(route)
     if len(route) < 8:
         raise RouteError("Parcours trop court : réseau routier insuffisant pour cette forme ici.")
@@ -610,18 +706,17 @@ def find_best_placements(G, shape_pts_m, lat0, lon0, top=3,
     """
     G = ride_core(G)
     kx = M_PER_DEG * math.cos(math.radians(lat0))
-    # routes densifiées : un point tous les ~25 m le long de chaque tronçon
-    pts_list = []
-    for u, v in G.edges():
-        x1 = (G.nodes[u]["x"] - lon0) * kx
-        y1 = (G.nodes[u]["y"] - lat0) * M_PER_DEG
-        x2 = (G.nodes[v]["x"] - lon0) * kx
-        y2 = (G.nodes[v]["y"] - lat0) * M_PER_DEG
-        n = max(1, int(math.hypot(x2 - x1, y2 - y1) // 25))
-        for i in range(n + 1):
-            t = i / n
-            pts_list.append((x1 + (x2 - x1) * t, y1 + (y2 - y1) * t))
-    tree = shapely.STRtree(shapely.points(np.array(pts_list)))
+    # routes densifiées : un point tous les ~25 m le long de chaque tronçon (vectorisé)
+    nidx = {n: i for i, n in enumerate(G.nodes)}
+    NX = np.array([(G.nodes[n]["x"] - lon0) * kx for n in G.nodes])
+    NY = np.array([(G.nodes[n]["y"] - lat0) * M_PER_DEG for n in G.nodes])
+    E = np.array([(nidx[u], nidx[v]) for u, v in G.edges()])
+    x1, y1, x2, y2 = NX[E[:, 0]], NY[E[:, 0]], NX[E[:, 1]], NY[E[:, 1]]
+    k = np.maximum(1, (np.hypot(x2 - x1, y2 - y1) // 25).astype(int)) + 1
+    rep_ = np.repeat(np.arange(len(E)), k)
+    t = (np.arange(k.sum()) - np.repeat(np.cumsum(k) - k, k)) / np.repeat(k - 1, k)
+    pts_arr = np.column_stack([x1[rep_] + (x2 - x1)[rep_] * t, y1[rep_] + (y2 - y1)[rep_] * t])
+    tree = shapely.STRtree(shapely.points(pts_arr))
 
     base = [tuple(p) for p in shape_pts_m]
     line = LineString(base)

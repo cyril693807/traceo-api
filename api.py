@@ -18,6 +18,7 @@ import threading
 import time
 
 import gpxpy
+from shapely.geometry import LineString, Point as ShapelyPoint
 import gpxpy.gpx
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -84,10 +85,11 @@ def diagnostic():
 @app.get("/graph", include_in_schema=False)
 def graph_dump(lat: float, lon: float, radius_m: int = Query(3500, ge=500, le=6000), profile: str = "route"):
     """Export compact du réseau routier (pour tester l'algorithme hors ligne)."""
-    try:
-        G = fetch_osm_graph(lat, lon, radius_m, profile)
-    except RoadDataUnavailable as e:
-        raise HTTPException(503, str(e))
+    with HEAVY_LOCK:
+        try:
+            G = fetch_osm_graph(lat, lon, radius_m, profile)
+        except RoadDataUnavailable as e:
+            raise HTTPException(503, str(e))
     ids = {n: i for i, n in enumerate(G.nodes)}
     return {
         "nodes": [[round(G.nodes[n]["y"], 6), round(G.nodes[n]["x"], 6)] for n in G.nodes],
@@ -210,23 +212,34 @@ def _generate(
         for p in placements:
             if best is not None and time.monotonic() - t0 > SEARCH_BUDGET_S:
                 break
-            try:
-                r, mm = route_shape_on_roads(G, p["pts"], lat, lon)
-            except RouteError:
-                continue
-            except Exception:
-                logger.exception("Echec du tracé")
+            mm = try_route(p)
+            if mm is None:
                 continue
             ideal = mm["shape_km"]
-            km_err = abs(mm["route_km"] - target_km) / target_km
-            score = (mm["mean_dev_m"] / max(mm["coverage_pct"], 1.0) * (1.0 + 4.0 * km_err)
-                     * (1.0 + mm.get("key_dev_m", 0.0) / 120.0))
             if ideal > 0:
                 # rapport longueur réelle / forme idéale, mesuré sur les meilleurs tracés
                 ratios.append((mm["mean_dev_m"] / max(mm["coverage_pct"], 1.0), mm["route_km"] / ideal))
-            if best is None or score < best[0]:
-                best = (score, r, mm, p)
         return ratios
+
+    def try_route(p):
+        """Trace une position candidate, la note, et la garde si c'est la meilleure."""
+        nonlocal best
+        try:
+            r, mm = route_shape_on_roads(G, p["pts"], lat, lon)
+        except RouteError:
+            return None
+        except Exception:
+            logger.exception("Echec du tracé")
+            return None
+        # longueur totale estimée = boucle + liaison aller-retour jusqu'au départ
+        appr = 1.3 * LineString(p["pts"]).distance(ShapelyPoint(0.0, 0.0)) / 1000.0
+        mm["est_total_km"] = mm["route_km"] + 2 * appr
+        km_err = abs(mm["est_total_km"] - target_km) / target_km
+        score = (mm["mean_dev_m"] / max(mm["coverage_pct"], 1.0) * (1.0 + 4.0 * km_err)
+                 * (1.0 + mm.get("key_dev_m", 0.0) / 120.0))
+        if best is None or score < best[0]:
+            best = (score, r, mm, p)
+        return mm
 
     # Tour 1 : taille nominale. On mesure de combien le parcours réel dépasse la forme idéale ici.
     ratios = attempt(pts, 3)
@@ -237,6 +250,18 @@ def _generate(
         if abs(k - 1.0) > 0.08:
             logger.info("recalage de la taille : x%.2f (parcours réel / forme idéale = %.2f)", k, ratio)
             attempt([(x * k, y * k) for x, y in pts], 4)
+    # Tour 3 : retouche fine de la taille autour de la meilleure position si la
+    # longueur est encore loin de la demande (> 10 %).
+    if best is not None and time.monotonic() - t0 < SEARCH_BUDGET_S:
+        bm, bp = best[2], best[3]
+        appr = bm["est_total_km"] - bm["route_km"]
+        if abs(bm["est_total_km"] - target_km) / target_km > 0.10 and bm["route_km"] > 0:
+            f = min(1.5, max(0.6, (target_km - appr) / bm["route_km"]))
+            cx = sum(x for x, _ in bp["pts"]) / len(bp["pts"])
+            cy = sum(y for _, y in bp["pts"]) / len(bp["pts"])
+            moved = [(cx + (x - cx) * f, cy + (y - cy) * f) for x, y in bp["pts"]]
+            logger.info("retouche de la taille : x%.2f", f)
+            try_route(dict(bp, pts=moved, scale=round(bp["scale"] * f, 2)))
     if best is None:
         raise HTTPException(422, "Impossible de tracer cette forme ici. Essaie une zone plus urbaine ou une autre longueur.")
     _, route, m, chosen = best
