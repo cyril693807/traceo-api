@@ -24,7 +24,7 @@ from fastapi.responses import RedirectResponse, Response
 from gpx_shape_generator import SHAPES, _haversine_m
 from routing import (
     PROFILES, RoadDataUnavailable, RouteError,
-    diagnose_overpass, fetch_osm_graph, route_shape_on_roads,
+    diagnose_overpass, fetch_osm_graph, find_best_placements, route_shape_on_roads,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -48,12 +48,10 @@ app.add_middleware(
 
 PUBLIC_SHAPES = ["heart", "star", "circle", "infinity"]
 
-SHIFT_M = 1000
+SHIFT_M = 1500
 SEARCH_BUDGET_S = 40
-# (décalage est, décalage nord, échelle) : essayés dans l'ordre, on garde le meilleur
-CANDIDATES = [(0, 0, 1.0)] + [(dx, dy, 1.0) for dx, dy in
-    [(700, 0), (-700, 0), (0, 700), (0, -700), (700, 700), (-700, 700), (700, -700), (-700, -700),
-     (1000, 0), (-1000, 0), (0, 1000), (0, -1000)]] + [(0, 0, 1.2), (0, 0, 0.85)]
+TOP_PLACEMENTS = 12
+ROUTE_OVERHEAD = 1.4  # longueur réelle du parcours / longueur de la forme idéale
 
 
 @app.get("/", include_in_schema=False)
@@ -88,10 +86,11 @@ def graph_dump(lat: float, lon: float, radius_m: int = Query(3500, ge=500, le=60
 
 @app.get("/generate")
 def generate(
-    lat: float = Query(..., ge=-90, le=90, description="Latitude du centre"),
-    lon: float = Query(..., ge=-180, le=180, description="Longitude du centre"),
+    lat: float = Query(..., ge=-90, le=90, description="Latitude du point de départ / centre"),
+    lon: float = Query(..., ge=-180, le=180, description="Longitude du point de départ / centre"),
     shape: str = Query("heart", description=f"Forme : {', '.join(PUBLIC_SHAPES)}"),
-    width_m: float = Query(4000, ge=1000, le=10000, description="Largeur de la forme en mètres (1000-10000). Moins de 3000 m donne des formes grossières, sauf en ville très dense."),
+    length_km: float | None = Query(None, ge=10, le=45, description="Longueur visée du parcours en km (10-45). Prioritaire sur width_m."),
+    width_m: float = Query(5000, ge=1000, le=10000, description="Largeur de la forme en mètres, si length_km n'est pas donné."),
     profile: str = Query("route", description="route = routes revêtues, vtt = chemins et pistes inclus"),
 ):
     if shape not in PUBLIC_SHAPES:
@@ -99,12 +98,22 @@ def generate(
     if profile not in PROFILES:
         raise HTTPException(400, f"Profil inconnu '{profile}'. Profils : {list(PROFILES)}")
 
-    # 1. Forme idéale, en mètres autour du centre
     fn = SHAPES[shape]
-    pts = fn(n_points=240, radius_m=width_m / 2) if shape == "circle" else fn(n_points=240, width_m=width_m)
+
+    def make(w):
+        return fn(n_points=240, radius_m=w / 2) if shape == "circle" else fn(n_points=240, width_m=w)
+
+    # 1. Taille de la forme. Un parcours sur routes est ~1,4x plus long que la forme idéale.
+    if length_km is not None:
+        probe = make(4000)
+        probe_km = sum(math.dist(probe[i], probe[i + 1]) for i in range(len(probe) - 1)) / 1000.0
+        width_m = min(10000.0, max(1500.0, 4000.0 * length_km / (ROUTE_OVERHEAD * probe_km)))
+    pts = make(width_m)
+    ideal_km = sum(math.dist(pts[i], pts[i + 1]) for i in range(len(pts) - 1)) / 1000.0
+    target_km = length_km if length_km is not None else ideal_km * ROUTE_OVERHEAD
 
     # 2. Vraies routes autour (zone = forme + marge pour pouvoir décaler la forme)
-    radius = int(max(abs(c) for p in pts for c in p) + 500 + SHIFT_M)
+    radius = int(max(abs(c) for p in pts for c in p) * 1.25 + SHIFT_M + 600)
     try:
         G = fetch_osm_graph(lat, lon, radius, profile)
     except RoadDataUnavailable as e:
@@ -112,30 +121,33 @@ def generate(
     except RouteError as e:
         raise HTTPException(422, str(e))
 
-    # 3. Tracer la forme sur ces routes. Le réseau routier n'est pas régulier :
-    #    on essaie quelques décalages / tailles et on garde le tracé le plus fidèle.
+    # 3. Où poser la forme ? On teste de nombreuses positions / tailles / rotations
+    #    (évaluation rapide), puis on trace pour de bon les meilleures et on garde la plus fidèle.
     t0 = time.monotonic()
     best = None
-    for dx, dy, k in CANDIDATES:
+    try:
+        placements = find_best_placements(G, pts, lat, lon, top=TOP_PLACEMENTS, max_shift_m=SHIFT_M)
+    except Exception:
+        logger.exception("Echec de la recherche de position")
+        placements = [{"pts": pts, "dx": 0, "dy": 0, "scale": 1.0, "rot": 0}]
+    for p in placements:
         if best is not None and time.monotonic() - t0 > SEARCH_BUDGET_S:
             break
-        cand = [(x * k + dx, y * k + dy) for x, y in pts]
         try:
-            r, mm = route_shape_on_roads(G, cand, lat, lon)
+            r, mm = route_shape_on_roads(G, p["pts"], lat, lon)
         except RouteError:
             continue
         except Exception:
             logger.exception("Echec du tracé")
             continue
-        score = mm["mean_dev_m"] / max(mm["coverage_pct"], 1.0)
+        km_err = abs(mm["route_km"] - target_km) / target_km
+        score = mm["mean_dev_m"] / max(mm["coverage_pct"], 1.0) * (1.0 + 2.0 * km_err)
         if best is None or score < best[0]:
-            best = (score, r, mm, (dx, dy, k))
-        if mm["quality"] == "bon":
-            break
+            best = (score, r, mm, p)
     if best is None:
-        raise HTTPException(422, "Impossible de tracer cette forme ici. Essaie une forme plus grande ou une zone plus urbaine.")
+        raise HTTPException(422, "Impossible de tracer cette forme ici. Essaie une zone plus urbaine ou une autre longueur.")
     _, route, m, chosen = best
-    logger.info("candidat retenu dx=%s dy=%s échelle=%s", *chosen)
+    logger.info("position retenue dx=%s dy=%s échelle=%s rot=%s cible=%.0fkm", chosen["dx"], chosen["dy"], chosen["scale"], chosen["rot"], target_km)
 
     # 4. GPX (sans doublons consécutifs, avec altitude et heure fictives :
     #    certains services, dont Garmin Connect, rejettent les traces sans ces champs)
