@@ -434,8 +434,8 @@ def route_shape_on_roads(G, shape_pts_m, lat0, lon0,
 # ----------------------------------------------------------------------------
 
 def find_best_placements(G, shape_pts_m, lat0, lon0, top=3,
-                         max_shift_m=1500.0, step_m=250.0,
-                         scales=(0.8, 0.9, 1.0, 1.1, 1.25), rotations_deg=(-12, 0, 12)):
+                         max_shift_m=1500.0, step_m=400.0,
+                         scales=(0.8, 0.9, 1.0, 1.1, 1.2), rotations_deg=(-10, 0, 10)):
     """Cherche où poser la forme (décalage, taille, rotation) pour qu'elle tombe
     sur le plus de routes. Évaluation très rapide : on mesure, pour chaque position
     candidate, la distance de la forme aux routes les plus proches (pas de calcul
@@ -459,24 +459,37 @@ def find_best_placements(G, shape_pts_m, lat0, lon0, top=3,
     line = LineString(base)
     samples = np.array([(p.x, p.y) for p in _samples(line, step=60.0)])
 
-    shifts = np.arange(-max_shift_m, max_shift_m + 1, step_m)
+    def evaluate(k, rot, dx, dy):
+        c, sn = math.cos(math.radians(rot)), math.sin(math.radians(rot))
+        rx = (samples[:, 0] * c - samples[:, 1] * sn) * k
+        ry = (samples[:, 0] * sn + samples[:, 1] * c) * k
+        q = shapely.points(np.column_stack([rx + dx, ry + dy]))
+        _, d = tree.query_nearest(q, return_distance=True, all_matches=False)
+        score = float(np.mean(np.minimum(d, 200.0))) + 0.5 * float(np.mean(d > 60.0)) * 100
+        # on préfère rester près du point demandé et garder la taille demandée
+        return score + 0.004 * math.hypot(dx, dy) + 30.0 * abs(k - 1.0)
+
+    # 1) balayage grossier (rapide), 2) affinage autour des meilleures positions
+    t_start = time.monotonic()
+    coarse = np.arange(-max_shift_m, max_shift_m + 1, step_m)
     results = []
     for k in scales:
         for rot in rotations_deg:
-            c, s = math.cos(math.radians(rot)), math.sin(math.radians(rot))
-            rx = (samples[:, 0] * c - samples[:, 1] * s) * k
-            ry = (samples[:, 0] * s + samples[:, 1] * c) * k
-            for dx in shifts:
-                for dy in shifts:
+            for dx in coarse:
+                for dy in coarse:
                     if math.hypot(dx, dy) > max_shift_m * 1.2:
                         continue
-                    q = shapely.points(np.column_stack([rx + dx, ry + dy]))
-                    _, d = tree.query_nearest(q, return_distance=True, all_matches=False)
-                    score = float(np.mean(np.minimum(d, 200.0))) + 0.5 * float(np.mean(d > 60.0)) * 100
-                    # on préfère rester près du point demandé et garder la taille demandée
-                    score += 0.004 * math.hypot(dx, dy) + 30.0 * abs(k - 1.0)
-                    results.append((score, dx, dy, k, rot))
+                    results.append((evaluate(k, rot, dx, dy), float(dx), float(dy), k, rot))
     results.sort(key=lambda r: r[0])
+    fine = []
+    for _, bx, by, k, rot in results[:6]:
+        for dx in (-step_m / 2, 0.0, step_m / 2):
+            for dy in (-step_m / 2, 0.0, step_m / 2):
+                if time.monotonic() - t_start > 20.0:
+                    break
+                fine.append((evaluate(k, rot, bx + dx, by + dy), bx + dx, by + dy, k, rot))
+    results = sorted(results + fine, key=lambda r: r[0])
+    logger.info("recherche de position : %d positions testées en %.1fs", len(results), time.monotonic() - t_start)
 
     # on garde des positions différentes les unes des autres
     chosen = []

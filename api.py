@@ -50,7 +50,7 @@ app.add_middleware(
 PUBLIC_SHAPES = ["heart", "star", "circle", "infinity"]
 
 SHIFT_M = 1500
-SEARCH_BUDGET_S = 40
+SEARCH_BUDGET_S = 30
 TOP_PLACEMENTS = 12
 ROUTE_OVERHEAD = 1.4  # longueur réelle du parcours / longueur de la forme idéale
 
@@ -155,6 +155,7 @@ def generate(
     if best is None:
         raise HTTPException(422, "Impossible de tracer cette forme ici. Essaie une zone plus urbaine ou une autre longueur.")
     _, route, m, chosen = best
+    logger.info("durée recherche+tracé %.1fs", time.monotonic() - t0)
     logger.info("position retenue dx=%s dy=%s échelle=%s rot=%s cible=%.0fkm", chosen["dx"], chosen["dy"], chosen["scale"], chosen["rot"], target_km)
 
     # 4. GPX (sans doublons consécutifs, avec altitude et heure fictives :
