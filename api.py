@@ -157,7 +157,8 @@ def generate(
             if ideal > 0:
                 ratios.append(mm["route_km"] / ideal)
             km_err = abs(mm["route_km"] - target_km) / target_km
-            score = mm["mean_dev_m"] / max(mm["coverage_pct"], 1.0) * (1.0 + 2.0 * km_err)
+            score = (mm["mean_dev_m"] / max(mm["coverage_pct"], 1.0) * (1.0 + 2.0 * km_err)
+                     * (1.0 + mm.get("key_dev_m", 0.0) / 120.0))
             if best is None or score < best[0]:
                 best = (score, r, mm, p)
         return ratios

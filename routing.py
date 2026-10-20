@@ -296,6 +296,64 @@ def _remove_spurs(route):
     return route
 
 
+def key_points(shape_pts_m, min_turn_deg=50.0):
+    """Points caractéristiques d'une forme : là où elle tourne fort (pointe et creux
+    du cœur, branches de l'étoile). Ce sont eux qui rendent la forme reconnaissable."""
+    pts = np.array(_resample_polyline([tuple(p) for p in shape_pts_m], 240))
+    n = len(pts)
+    closed = math.hypot(*(pts[0] - pts[-1])) < 1.0
+    turn = np.zeros(n)
+    k = 4
+    for i in range(n):
+        a, b = i - k, i + k
+        if closed:
+            a %= n - 1
+            b %= n - 1
+        elif a < 0 or b >= n:
+            continue
+        v1 = pts[i] - pts[a]
+        v2 = pts[b] - pts[i]
+        if np.hypot(*v1) < 1e-6 or np.hypot(*v2) < 1e-6:
+            continue
+        cosang = np.dot(v1, v2) / (np.hypot(*v1) * np.hypot(*v2))
+        turn[i] = math.degrees(math.acos(max(-1.0, min(1.0, cosang))))
+    keys = []
+    for i in range(n - (1 if closed else 0)):
+        if turn[i] < min_turn_deg:
+            continue
+        lo, hi = max(0, i - k), min(n, i + k + 1)
+        if turn[i] >= turn[lo:hi].max():
+            p = tuple(pts[i])
+            if all(math.hypot(p[0] - q[0], p[1] - q[1]) > 50 for q in keys):
+                keys.append(p)
+    return keys
+
+
+def _remove_small_loops(route, length_of, max_loop_m=600.0):
+    """Supprime les petites boucles parasites (le parcours repasse par le même
+    carrefour après moins de max_loop_m) : typiquement un crochet dans une impasse
+    ou un tour de pâté de maisons pour toucher un point d'ancrage mal placé.
+    La grande boucle de la forme elle-même (départ = arrivée) n'est jamais touchée."""
+    if len(route) < 3:
+        return route
+    out, cum, pos = [route[0]], [0.0], {route[0]: 0}
+    for j in range(1, len(route)):
+        n = route[j]
+        c = cum[-1] + length_of(out[-1], n)
+        i = pos.get(n)
+        is_closing = (j == len(route) - 1 and i == 0)
+        if i is not None and not is_closing and c - cum[i] < max_loop_m:
+            for m in out[i + 1:]:
+                pos.pop(m, None)
+            del out[i + 1:]
+            del cum[i + 1:]
+            continue
+        out.append(n)
+        cum.append(c)
+        pos[n] = len(out) - 1
+    return out
+
+
 def _samples(line, step=20.0):
     k = max(2, int(line.length // step) + 1)
     return shapely.line_interpolate_point(line, np.linspace(0.0, line.length, k))
@@ -338,15 +396,25 @@ def route_shape_on_roads(G, shape_pts_m, lat0, lon0,
     # --- points d'ancrage le long de la forme -------------------------------
     n_anchor = max(12, int(round(line.length / anchor_spacing_m)))
     anchors = _resample_polyline(pts, n_anchor + 1)
-    sequence, skipped = [], 0
-    for ax, ay in anchors:
+    keys = key_points(pts)
+    protected_idx = set()
+    for kx_, ky_ in keys:
+        j = int(np.argmin([math.hypot(a[0] - kx_, a[1] - ky_) for a in anchors]))
+        if 0 < j < len(anchors) - 1:
+            anchors[j] = (kx_, ky_)
+            protected_idx.add(j)
+    sequence, protected, skipped = [], set(), 0
+    for j, (ax, ay) in enumerate(anchors):
         d = np.hypot(px - ax, py - ay)
         i = int(np.argmin(d))
-        if d[i] > max_snap_m:
+        limit = max_snap_m * (1.6 if j in protected_idx else 1.0)
+        if d[i] > limit:
             skipped += 1
             continue
         if not sequence or sequence[-1] != nodes[i]:
             sequence.append(nodes[i])
+        if j in protected_idx:
+            protected.add(len(sequence) - 1)
     if len(sequence) < 4:
         raise RouteError("Réseau routier trop clairsemé ici pour cette forme : "
                          "essaie une largeur plus petite ou un autre point de départ.")
@@ -371,7 +439,7 @@ def route_shape_on_roads(G, shape_pts_m, lat0, lon0,
         via = _cost(prev, cur, 3000.0) + _cost(cur, nxt, 3000.0)
         direct = _cost(prev, nxt, via + 1.0 if math.isfinite(via) else 6000.0)
         saving = via - direct if math.isfinite(via) and math.isfinite(direct) else 0.0
-        if saving > prune_saving_m and not dropped_prev:
+        if saving > prune_saving_m and not dropped_prev and i not in protected:
             dropped_prev = True           # le détour par `cur` ne vaut pas le coup
             continue
         dropped_prev = False
@@ -390,6 +458,8 @@ def route_shape_on_roads(G, shape_pts_m, lat0, lon0,
             continue
         route.extend(path[1:])
     route = _remove_spurs(route)
+    route = _remove_small_loops(route, lambda a, b: G[a][b]["length"])
+    route = _remove_spurs(route)
     if len(route) < 8:
         raise RouteError("Parcours trop court : réseau routier insuffisant pour cette forme ici.")
 
@@ -400,6 +470,8 @@ def route_shape_on_roads(G, shape_pts_m, lat0, lon0,
     dev = shapely.distance(_samples(route_line), line)       # route -> forme
     cov = shapely.distance(_samples(line), route_line)       # forme -> route
     mean_dev = float(np.mean(dev))
+    key_dev = (float(np.mean(shapely.distance(shapely.points(np.array(keys)), route_line)))
+               if keys else 0.0)
     coverage = float(100.0 * np.mean(cov <= 40.0))
 
     # La fidélité se juge par rapport à la taille de la forme : 40 m d'écart sur un
@@ -420,6 +492,7 @@ def route_shape_on_roads(G, shape_pts_m, lat0, lon0,
         "p90_dev_m": round(float(np.percentile(dev, 90)), 1),
         "max_dev_m": round(float(np.max(dev)), 1),
         "coverage_pct": round(coverage, 1),
+        "key_dev_m": round(key_dev, 1),
         "route_km": round(route_line.length / 1000.0, 2),
         "shape_km": round(line.length / 1000.0, 2),
         "anchors_skipped": skipped,
@@ -458,6 +531,10 @@ def find_best_placements(G, shape_pts_m, lat0, lon0, top=3,
     base = [tuple(p) for p in shape_pts_m]
     line = LineString(base)
     samples = np.array([(p.x, p.y) for p in _samples(line, step=90.0)])
+    keys = key_points(base)
+    n_main = len(samples)
+    if keys:
+        samples = np.vstack([samples, np.array(keys)])
 
     def evaluate(k, rot, dx, dy):
         c, sn = math.cos(math.radians(rot)), math.sin(math.radians(rot))
@@ -465,7 +542,10 @@ def find_best_placements(G, shape_pts_m, lat0, lon0, top=3,
         ry = (samples[:, 0] * sn + samples[:, 1] * c) * k
         q = shapely.points(np.column_stack([rx + dx, ry + dy]))
         _, d = tree.query_nearest(q, return_distance=True, all_matches=False)
-        score = float(np.mean(np.minimum(d, 200.0))) + 0.5 * float(np.mean(d > 60.0)) * 100
+        dm, dk = d[:n_main], d[n_main:]
+        score = float(np.mean(np.minimum(dm, 200.0))) + 0.5 * float(np.mean(dm > 60.0)) * 100
+        if len(dk):
+            score += 0.6 * float(np.mean(np.minimum(dk, 300.0)))
         # on préfère rester près du point demandé et garder la taille demandée
         return score + 0.004 * math.hypot(dx, dy) + 30.0 * abs(k - 1.0)
 
