@@ -11,6 +11,7 @@ Lancer en local :  uvicorn api:app --reload   puis ouvrir http://127.0.0.1:8000/
 """
 
 import datetime
+from collections import OrderedDict
 import logging
 import math
 import os
@@ -168,31 +169,12 @@ def _check(
     return {"formes": result, "conseil": advice, "zone": level}
 
 
-def _generate(
-    lat: float = Query(..., ge=-90, le=90, description="Latitude du point de départ / centre"),
-    lon: float = Query(..., ge=-180, le=180, description="Longitude du point de départ / centre"),
-    shape: str = Query("heart", description=f"Forme : {', '.join(PUBLIC_SHAPES)}"),
-    length_km: float | None = Query(None, ge=10, le=45, description="Longueur visée du parcours en km (10-45). Prioritaire sur width_m."),
-    width_m: float = Query(5000, ge=1000, le=10000, description="Largeur de la forme en mètres, si length_km n'est pas donné."),
-    profile: str = Query("route", description="route = routes revêtues, vtt = chemins et pistes inclus"),
-):
-    if shape not in PUBLIC_SHAPES:
-        raise HTTPException(400, f"Forme inconnue '{shape}'. Formes disponibles : {PUBLIC_SHAPES}")
-    if profile not in PROFILES:
-        raise HTTPException(400, f"Profil inconnu '{profile}'. Profils : {list(PROFILES)}")
-
-    # 1. Taille de la forme. Un parcours sur routes est ~1,4x plus long que la forme idéale.
+def compute_shape(G, lat, lon, shape, profile, length_km=None, width_m=5000.0, budget_s=None):
+    """Calcule le parcours d'une forme sur le réseau G. Retourne (gpx_xml, mesures).
+    Lève RouteError si la forme ne peut pas être tracée."""
+    budget_s = budget_s or SEARCH_BUDGET_S
     pts, ideal_km = shape_points(shape, length_km, width_m)
     target_km = length_km if length_km is not None else ideal_km * ROUTE_OVERHEAD
-
-    # 2. Vraies routes autour (zone = forme + marge pour pouvoir décaler la forme)
-    radius = area_radius(pts)
-    try:
-        G = fetch_osm_graph(lat, lon, radius, profile)
-    except RoadDataUnavailable as e:
-        raise HTTPException(503, str(e))
-    except RouteError as e:
-        raise HTTPException(422, str(e))
 
     # 3. Où poser la forme ? On teste de nombreuses positions / tailles / rotations
     #    (évaluation rapide), puis on trace pour de bon les meilleures et on garde la plus fidèle.
@@ -210,7 +192,7 @@ def _generate(
             placements = [{"pts": shape_pts, "dx": 0, "dy": 0, "scale": 1.0, "rot": 0}]
         ratios = []
         for p in placements:
-            if best is not None and time.monotonic() - t0 > SEARCH_BUDGET_S:
+            if best is not None and time.monotonic() - t0 > budget_s:
                 break
             mm = try_route(p)
             if mm is None:
@@ -225,7 +207,7 @@ def _generate(
         """Trace une position candidate, la note, et la garde si c'est la meilleure."""
         nonlocal best
         try:
-            r, mm = route_shape_on_roads(G, p["pts"], lat, lon)
+            r, mm = route_shape_on_roads(G, p["pts"], lat, lon, simple_shape=shape in SIMPLE_SHAPES)
         except RouteError:
             return None
         except Exception:
@@ -236,7 +218,8 @@ def _generate(
         mm["est_total_km"] = mm["route_km"] + 2 * appr
         km_err = abs(mm["est_total_km"] - target_km) / target_km
         score = (mm["mean_dev_m"] / max(mm["coverage_pct"], 1.0) * (1.0 + 4.0 * km_err)
-                 * (1.0 + mm.get("key_dev_m", 0.0) / 120.0))
+                 * (1.0 + mm.get("key_dev_m", 0.0) / 120.0)
+                 * (3.0 if mm["quality"] == "faible" else 1.0))   # préférer un tracé reconnaissable
         if best is None or score < best[0]:
             best = (score, r, mm, p)
         return mm
@@ -244,7 +227,7 @@ def _generate(
     # Tour 1 : taille nominale. On mesure de combien le parcours réel dépasse la forme idéale ici.
     ratios = attempt(pts, 3)
     # Tour 2 : on recale la taille de la forme pour tomber sur la longueur demandée.
-    if ratios and time.monotonic() - t0 < SEARCH_BUDGET_S:
+    if ratios and time.monotonic() - t0 < budget_s:
         ratio = min(ratios)[1]
         k = min(1.6, max(0.5, target_km / (ratio * ideal_km)))
         if abs(k - 1.0) > 0.08:
@@ -252,7 +235,7 @@ def _generate(
             attempt([(x * k, y * k) for x, y in pts], 4)
     # Tour 3 : retouche fine de la taille autour de la meilleure position si la
     # longueur est encore loin de la demande (> 10 %).
-    if best is not None and time.monotonic() - t0 < SEARCH_BUDGET_S:
+    if best is not None and time.monotonic() - t0 < budget_s:
         bm, bp = best[2], best[3]
         appr = bm["est_total_km"] - bm["route_km"]
         if abs(bm["est_total_km"] - target_km) / target_km > 0.10 and bm["route_km"] > 0:
@@ -263,7 +246,7 @@ def _generate(
             logger.info("retouche de la taille : x%.2f", f)
             try_route(dict(bp, pts=moved, scale=round(bp["scale"] * f, 2)))
     if best is None:
-        raise HTTPException(422, "Impossible de tracer cette forme ici. Essaie une zone plus urbaine ou une autre longueur.")
+        raise RouteError("Impossible de tracer cette forme ici. Essaie une zone plus urbaine ou une autre longueur.")
     _, route, m, chosen = best
     # Départ et retour au point choisi par l'utilisateur
     route, approach_m = connect_start(G, route, lat, lon)
@@ -294,8 +277,12 @@ def _generate(
 
     logger.info("shape=%s profile=%s qualité=%s écart=%.0fm couverture=%.0f%% %.1fkm | détail=%s | réseau utilisé=%d nœuds",
                 shape, profile, m["quality"], m["mean_dev_m"], m["coverage_pct"], m["route_km"], m, G.number_of_nodes())
+    return gpx.to_xml(), m
+
+
+def _response(xml, m, shape, profile):
     return Response(
-        content=gpx.to_xml(),
+        content=xml,
         media_type="application/gpx+xml",
         headers={
             "Content-Disposition": f'attachment; filename="traceo_{shape}.gpx"',
@@ -308,6 +295,60 @@ def _generate(
             "X-Profile": profile,
         },
     )
+
+
+# Parcours déjà calculés (par l'exploration ou une génération) : réponse immédiate.
+RESULTS = OrderedDict()
+RESULTS_MAX = 60
+
+
+def _result_key(lat, lon, length_km, profile, shape):
+    return (round(lat, 3), round(lon, 3), round(float(length_km or 0), 0), profile, shape)
+
+
+def _remember(key, value):
+    RESULTS[key] = value
+    RESULTS.move_to_end(key)
+    while len(RESULTS) > RESULTS_MAX:
+        RESULTS.popitem(last=False)
+
+
+def _generate(
+    lat: float = Query(..., ge=-90, le=90, description="Latitude du point de départ / centre"),
+    lon: float = Query(..., ge=-180, le=180, description="Longitude du point de départ / centre"),
+    shape: str = Query("heart", description=f"Forme : {', '.join(PUBLIC_SHAPES)}"),
+    length_km: float | None = Query(None, ge=10, le=45, description="Longueur visée du parcours en km (10-45). Prioritaire sur width_m."),
+    width_m: float = Query(5000, ge=1000, le=10000, description="Largeur de la forme en mètres, si length_km n'est pas donné."),
+    profile: str = Query("route", description="route = routes revêtues, vtt = chemins et pistes inclus"),
+):
+    if shape not in PUBLIC_SHAPES:
+        raise HTTPException(400, f"Forme inconnue '{shape}'. Formes disponibles : {PUBLIC_SHAPES}")
+    if profile not in PROFILES:
+        raise HTTPException(400, f"Profil inconnu '{profile}'. Profils : {list(PROFILES)}")
+
+    key = _result_key(lat, lon, length_km, profile, shape)
+    if length_km is not None and key in RESULTS:
+        xml, m = RESULTS[key]
+        logger.info("parcours déjà calculé : %s", key)
+        return _response(xml, m, shape, profile)
+    pts, _ = shape_points(shape, length_km, width_m)
+    G = _graph_for(lat, lon, area_radius(pts), profile)
+    try:
+        xml, m = compute_shape(G, lat, lon, shape, profile, length_km, width_m)
+    except RouteError as e:
+        raise HTTPException(422, str(e))
+    if length_km is not None:
+        _remember(key, (xml, m))
+    return _response(xml, m, shape, profile)
+
+
+def _graph_for(lat, lon, radius, profile):
+    try:
+        return fetch_osm_graph(lat, lon, radius, profile)
+    except RoadDataUnavailable as e:
+        raise HTTPException(503, str(e))
+    except RouteError as e:
+        raise HTTPException(422, str(e))
 
 
 @app.get("/check")
@@ -336,3 +377,77 @@ def generate(
     # temps dépassent les 512 Mo du serveur gratuit (le serveur redémarrait).
     with HEAVY_LOCK:
         return _generate(lat=lat, lon=lon, shape=shape, length_km=length_km, width_m=width_m, profile=profile)
+
+
+# ----------------------------------------------------------------------------
+# Exploration : quelles formes sont VRAIMENT réalisables autour d'un départ ?
+# On calcule pour de bon le parcours de chaque forme, en arrière-plan, une forme
+# après l'autre. Les formes trop déformées (fidélité "faible") ne sont pas
+# proposées. Les parcours calculés sont gardés : les générer ensuite est immédiat.
+# ----------------------------------------------------------------------------
+
+EXPLORE_ORDER = ["circle", "triangle", "diamond", "square", "heart", "star", "infinity"]
+EXPLORE = OrderedDict()       # clé de zone -> état de l'exploration
+EXPLORE_MAX = 20
+_latest_explore = {"key": None}
+
+
+def _zone_key(lat, lon, length_km, profile):
+    return (round(lat, 3), round(lon, 3), round(float(length_km), 0), profile)
+
+
+def _explore_worker(zkey, lat, lon, length_km, profile):
+    state = EXPLORE[zkey]
+    radius = max(area_radius(shape_points(s, length_km)[0]) for s in EXPLORE_ORDER)
+    for shape in EXPLORE_ORDER:
+        if _latest_explore["key"] != zkey:
+            state["etat"] = "abandonnee"        # l'utilisateur a changé de départ
+            return
+        rkey = _result_key(lat, lon, length_km, profile, shape)
+        try:
+            if rkey not in RESULTS:
+                with HEAVY_LOCK:
+                    G = fetch_osm_graph(lat, lon, radius, profile)
+                    xml, m = compute_shape(G, lat, lon, shape, profile, length_km)
+                _remember(rkey, (xml, m))
+            m = RESULTS[rkey][1]
+            ok = m["quality"] in ("bon", "moyen")
+            state["formes"][shape] = {"verdict": "proposee" if ok else "impossible",
+                                      "qualite": m["quality"], "km": m["total_km"]}
+        except RouteError:
+            state["formes"][shape] = {"verdict": "impossible", "qualite": None, "km": None}
+        except RoadDataUnavailable as e:
+            state["etat"] = "erreur"
+            state["message"] = str(e)
+            return
+        except Exception:
+            logger.exception("Echec de l'exploration (%s)", shape)
+            state["formes"][shape] = {"verdict": "impossible", "qualite": None, "km": None}
+    state["etat"] = "terminee"
+    logger.info("exploration %s : %s", zkey, {k: v["verdict"] for k, v in state["formes"].items()})
+
+
+@app.get("/explore")
+def explore(
+    lat: float = Query(..., ge=-90, le=90),
+    lon: float = Query(..., ge=-180, le=180),
+    length_km: float = Query(25, ge=10, le=45),
+    profile: str = Query("route"),
+):
+    """Lance (ou suit) l'exploration des formes réalisables autour de ce départ.
+    À appeler régulièrement : la réponse se complète au fil des calculs."""
+    if profile not in PROFILES:
+        raise HTTPException(400, f"Profil inconnu '{profile}'. Profils : {list(PROFILES)}")
+    zkey = _zone_key(lat, lon, length_km, profile)
+    _latest_explore["key"] = zkey
+    state = EXPLORE.get(zkey)
+    if state is None or state["etat"] in ("abandonnee", "erreur"):
+        state = {"etat": "en_cours", "formes": {}, "message": None}
+        EXPLORE[zkey] = state
+        while len(EXPLORE) > EXPLORE_MAX:
+            EXPLORE.popitem(last=False)
+        threading.Thread(target=_explore_worker, args=(zkey, lat, lon, length_km, profile),
+                         daemon=True).start()
+    ok = [s for s in EXPLORE_ORDER if state["formes"].get(s, {}).get("verdict") == "proposee"]
+    return {"etat": state["etat"], "faites": len(state["formes"]), "total": len(EXPLORE_ORDER),
+            "formes": state["formes"], "proposees": ok, "message": state["message"]}

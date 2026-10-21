@@ -500,7 +500,7 @@ def _samples(line, step=20.0):
 
 def route_shape_on_roads(G, shape_pts_m, lat0, lon0,
                          anchor_spacing_m=90.0, stray_m=25.0, max_snap_m=150.0,
-                         prune_saving_m=40.0):
+                         prune_saving_m=40.0, simple_shape=False):
     """Trace la forme sur le réseau G.
 
     Idée : chaque tronçon a un coût = longueur x type de voie x (1 + (écart/25m)²),
@@ -669,9 +669,21 @@ def route_shape_on_roads(G, shape_pts_m, lat0, lon0,
     coverage = float(100.0 * np.mean(cov <= tol))
     rel = mean_dev / span
     key_rel = key_dev / span
-    if rel <= 0.02 and coverage >= 60 and key_rel <= 0.03:
+    # Fidélité calibrée à l'œil sur 40 parcours réels (8 départs x 5 formes) :
+    # "reconnaissable" = la forme saute aux yeux sur la carte. Les formes simples
+    # (cercle, polygones) tolèrent plus d'écart que le cœur ou l'étoile, dont la
+    # pointe et les creux doivent être bien placés.
+    cov_wide = float(100.0 * np.mean(cov <= 0.04 * span))
+    strict_ok = cov_wide >= 80 and rel <= 0.035
+    if keys and len(keys) <= 3 and not simple_shape:
+        recognizable = strict_ok and key_rel <= 0.03          # cœur
+    elif not simple_shape:
+        recognizable = strict_ok and key_rel <= 0.03          # étoile, infini
+    else:
+        recognizable = strict_ok or (cov_wide >= 70 and rel <= 0.05)
+    if recognizable and cov_wide >= 92 and rel <= 0.02:
         quality = "bon"
-    elif rel <= 0.035 and coverage >= 45 and key_rel <= 0.06:
+    elif recognizable:
         quality = "moyen"
     else:
         quality = "faible"
@@ -683,6 +695,10 @@ def route_shape_on_roads(G, shape_pts_m, lat0, lon0,
         "max_dev_m": round(float(np.max(dev)), 1),
         "coverage_pct": round(coverage, 1),
         "key_dev_m": round(key_dev, 1),
+        "rel_dev": round(rel, 4),
+        "key_rel": round(key_rel, 4),
+        "cov_wide": round(cov_wide, 1),
+        "p90_rel": round(float(np.percentile(dev, 90)) / span, 4),
         "route_km": round(route_line.length / 1000.0, 2),
         "shape_km": round(line.length / 1000.0, 2),
         "anchors_skipped": skipped,

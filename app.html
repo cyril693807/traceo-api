@@ -125,11 +125,10 @@
   .shape-name { font-size: 10px; line-height: 1; }
   .shape-badge { position: absolute; top: 4px; right: 4px; width: 8px; height: 8px; border-radius: 50%; display: none; }
   .shape-btn[data-verdict] .shape-badge { display: block; }
-  .shape-btn[data-verdict="conseillee"] .shape-badge { background: #3fb27f; }
-  .shape-btn[data-verdict="possible"] .shape-badge { background: #e8a23d; }
-  .shape-btn[data-verdict="deconseillee"] .shape-badge { background: #d9534f; }
-  .shape-btn[data-verdict="deconseillee"] { opacity: 0.45; }
-  .shape-btn[data-verdict="deconseillee"].active { opacity: 1; }
+  .shape-btn[data-verdict="proposee"] .shape-badge { background: #3fb27f; }
+  .shape-btn[data-verdict="analyse"] .shape-badge { background: #82998a; animation: pulse 1.2s ease-in-out infinite; }
+  .shape-btn[data-verdict="impossible"] { display: none; }
+  @keyframes pulse { 0%, 100% { opacity: 0.25; } 50% { opacity: 1; } }
   .check-legend { font-size: 11px; margin-top: 6px; color: var(--text-muted); }
   .check-legend b { font-weight: 600; }
   .shape-btn:hover { color: var(--text-primary); }
@@ -524,6 +523,7 @@
       btn.classList.add("active");
       state.shape = btn.dataset.shape;
       refreshWidth();
+      if (typeof refreshGenerateBtn === "function") refreshGenerateBtn();
     });
   });
 
@@ -546,37 +546,81 @@
   let checkTimer = null, checkRun = 0;
   const checkLegend = document.getElementById("check-legend");
   function scheduleCheck() { clearTimeout(checkTimer); checkTimer = setTimeout(runCheck, 700); }
+
+  // Exploration : le serveur calcule pour de bon le parcours de chaque forme autour
+  // du départ. On ne PROPOSE que les formes qui donnent un dessin reconnaissable.
+  // Les parcours calculés sont gardés : les générer ensuite est immédiat.
   async function runCheck() {
     const my = ++checkRun;
-    document.querySelectorAll(".shape-btn").forEach((b) => b.removeAttribute("data-verdict"));
-    checkLegend.textContent = "Analyse des routes autour du départ… (jusqu'à une minute si le serveur dort)";
-    try {
-      const ctrl = new AbortController();
-      const t = setTimeout(() => ctrl.abort(), 150000);
-      const resp = await fetch(`${API_BASE_URL}/check?lat=${state.center.lat}&lon=${state.center.lon}` +
-        `&length_km=${state.lengthKm}&profile=${encodeURIComponent(state.profile)}`, { signal: ctrl.signal });
-      clearTimeout(t);
+    state.verdicts = {};
+    state.exploreDone = false;
+    document.querySelectorAll(".shape-btn").forEach((b) => b.setAttribute("data-verdict", "analyse"));
+    checkLegend.textContent = "Analyse de ta zone : on teste chaque forme sur les vraies routes… (le premier calcul peut prendre une minute)";
+    const url = () => `${API_BASE_URL}/explore?lat=${state.center.lat}&lon=${state.center.lon}` +
+      `&length_km=${state.lengthKm}&profile=${encodeURIComponent(state.profile)}`;
+    let failures = 0;
+    while (my === checkRun) {
+      let data;
+      try {
+        const ctrl = new AbortController();
+        const t = setTimeout(() => ctrl.abort(), 150000);
+        const resp = await fetch(url(), { signal: ctrl.signal });
+        clearTimeout(t);
+        if (!resp.ok) throw new Error("erreur " + resp.status);
+        data = await resp.json();
+        failures = 0;
+      } catch (err) {
+        if (my !== checkRun) return;
+        if (++failures >= 3) {
+          document.querySelectorAll(".shape-btn").forEach((b) => b.removeAttribute("data-verdict"));
+          checkLegend.textContent = "Analyse des formes indisponible pour l'instant — tu peux quand même générer.";
+          return;
+        }
+        await new Promise((r) => setTimeout(r, 4000));
+        continue;
+      }
       if (my !== checkRun) return;
-      if (!resp.ok) throw new Error("erreur " + resp.status);
-      const data = await resp.json();
-      state.verdicts = {};
-      document.querySelectorAll(".shape-btn").forEach((b) => {
-        const r = data.formes[b.dataset.shape];
-        if (!r) return;
-        b.setAttribute("data-verdict", r.verdict);
-        state.verdicts[b.dataset.shape] = r.verdict;
-        const label = { conseillee: "conseillée ici", possible: "possible ici", deconseillee: "déconseillée ici" }[r.verdict];
-        b.title = `${SHAPE_NAMES[b.dataset.shape]} : ${label}`;
-      });
-      const good = Object.keys(data.formes).filter((k) => data.formes[k].verdict === "conseillee").map((k) => SHAPE_NAMES[k]);
-      let txt = "🟢 conseillée · 🟠 possible · 🔴 déconseillée ici.";
-      if (good.length) txt += " Meilleurs choix : " + good.join(", ") + ".";
-      if (data.conseil) txt += " " + data.conseil;
-      checkLegend.textContent = txt;
-    } catch (err) {
-      if (my !== checkRun) return;
-      checkLegend.textContent = "Analyse des formes indisponible pour l'instant — tu peux quand même générer.";
+      applyExplore(data);
+      if (data.etat !== "en_cours") return;
+      await new Promise((r) => setTimeout(r, 3000));
     }
+  }
+
+  function applyExplore(data) {
+    const impossible = [];
+    document.querySelectorAll(".shape-btn").forEach((b) => {
+      const r = data.formes[b.dataset.shape];
+      const v = r ? r.verdict : (data.etat === "en_cours" ? "analyse" : "impossible");
+      b.setAttribute("data-verdict", v);
+      state.verdicts[b.dataset.shape] = v;
+      if (v === "proposee") b.title = `${SHAPE_NAMES[b.dataset.shape]} : réalisable ici (${r.km} km, fidélité ${r.qualite})`;
+      if (v === "impossible") impossible.push(SHAPE_NAMES[b.dataset.shape]);
+    });
+    // la forme choisie n'est pas réalisable : on bascule sur la première qui l'est
+    if (state.verdicts[state.shape] === "impossible" && data.proposees.length) {
+      document.querySelector(`.shape-btn[data-shape="${data.proposees[0]}"]`).click();
+    }
+    let txt;
+    if (data.etat === "en_cours") {
+      txt = `Analyse de ta zone : ${data.faites}/${data.total} formes testées… 🟢 = réalisable ici.`;
+    } else if (data.etat === "erreur") {
+      txt = "Routes indisponibles pour l'instant : " + (data.message || "réessaie dans une minute.");
+    } else if (data.proposees.length) {
+      txt = `🟢 Formes réalisables ici : ${data.proposees.map((k) => SHAPE_NAMES[k]).join(", ")}. Leur parcours est déjà prêt.`;
+    } else {
+      txt = "Aucune forme ne donne un dessin reconnaissable ici avec ces réglages. Essaie le mode VTT, une autre longueur ou un départ plus proche d'une ville.";
+    }
+    if (impossible.length && data.etat !== "erreur") txt += ` Non réalisables ici : ${impossible.join(", ")}.`;
+    checkLegend.textContent = txt;
+    state.exploreDone = data.etat === "terminee";
+    refreshGenerateBtn();
+  }
+
+  function refreshGenerateBtn() {
+    const v = state.verdicts && state.verdicts[state.shape];
+    const blocked = v === "impossible";
+    generateBtn.disabled = blocked;
+    generateBtn.title = blocked ? "Cette forme n'est pas réalisable autour de ce départ" : "";
   }
   setLength(25);
 
@@ -648,8 +692,8 @@
     readout.style.display = "none";
     generateBtn.disabled = true;
     generateBtn.textContent = "Calcul en cours...";
-    const warn = state.verdicts && state.verdicts[state.shape] === "deconseillee"
-      ? "Attention : cette forme est déconseillée ici, le résultat risque d'être peu reconnaissable. " : "";
+    const warn = state.verdicts && state.verdicts[state.shape] === "analyse"
+      ? "Cette forme est encore en cours d'analyse : le calcul peut être un peu plus long. " : "";
     statusLine.textContent = warn + "Calcul du parcours sur les routes réelles... Le premier calcul peut prendre jusqu'à une minute (serveur gratuit en veille).";
 
     const controller = new AbortController();
