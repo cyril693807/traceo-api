@@ -48,7 +48,7 @@ app.add_middleware(
     allow_headers=["*"],
     expose_headers=["Content-Disposition", "X-Quality", "X-Mean-Deviation-M",
                     "X-Coverage-Pct", "X-Route-Km", "X-Profile",
-                    "X-Shape-Km", "X-Approach-Km"],
+                    "X-Shape-Km", "X-Approach-Km", "X-Big-Roads-Pct"],
 )
 
 PUBLIC_SHAPES = ["heart", "star", "circle", "infinity", "triangle", "square", "diamond"]
@@ -94,7 +94,8 @@ def graph_dump(lat: float, lon: float, radius_m: int = Query(3500, ge=500, le=60
     ids = {n: i for i, n in enumerate(G.nodes)}
     return {
         "nodes": [[round(G.nodes[n]["y"], 6), round(G.nodes[n]["x"], 6)] for n in G.nodes],
-        "edges": [[ids[u], ids[v], round(d["length"], 1), d.get("mult", 1.0)] for u, v, d in G.edges(data=True)],
+        "edges": [[ids[u], ids[v], round(d["length"], 1), d.get("mult", 1.0), d.get("hw", "")]
+                  for u, v, d in G.edges(data=True)],
     }
 
 
@@ -293,6 +294,7 @@ def _response(xml, m, shape, profile):
             "X-Shape-Km": str(m["route_km"]),
             "X-Approach-Km": str(m["approach_km"]),
             "X-Profile": profile,
+            "X-Big-Roads-Pct": str(m.get("big_roads_pct", "")),
         },
     )
 

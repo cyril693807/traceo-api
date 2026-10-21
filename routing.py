@@ -21,6 +21,7 @@ Ici :
 """
 
 import gc
+import sys
 import logging
 import math
 import time
@@ -83,9 +84,54 @@ HIGHWAY_COST = {
     "path": 0.9,
 }
 
+# Profil "sécurisé" : mêmes routes revêtues, mais les grands axes coûtent très cher
+# et les aménagements cyclables (pistes, bandes, voies vertes) sont favorisés.
+SAFE_COST = {
+    "cycleway": 0.5,
+    "living_street": 0.8,
+    "residential": 0.9,
+    "unclassified": 1.0,
+    "service": 1.3,
+    "road": 1.3,
+    "tertiary": 1.8,
+    "tertiary_link": 1.8,
+    "secondary": 5.0,
+    "secondary_link": 5.0,
+    "primary": 12.0,
+    "primary_link": 12.0,
+}
+_BIKE_INFRA = ("lane", "track", "shared_lane", "share_busway", "separate")
+
+
+def way_cost(tags, profile):
+    """Multiplicateur de coût d'une voie selon son type (et le profil)."""
+    hw = tags.get("highway", "")
+    if profile != "securise":
+        return HIGHWAY_COST.get(hw, 1.2)
+    mult = SAFE_COST.get(hw, 1.5)
+    has_infra = (tags.get("bicycle") == "designated"
+                 or any(tags.get(k, "") in _BIKE_INFRA
+                        for k in ("cycleway", "cycleway:both", "cycleway:left", "cycleway:right")))
+    if has_infra and hw != "cycleway":
+        mult = max(0.6, mult * 0.35)      # bande ou piste le long de la route
+    try:
+        if int(str(tags.get("maxspeed", "0")).split()[0]) >= 70:
+            mult *= 2.0                     # route rapide
+    except ValueError:
+        pass
+    return mult
+
+
 PROFILES = {
     "route": {
         "label": "Vélo de route (routes revêtues)",
+        "highways": ["cycleway", "living_street", "residential", "unclassified",
+                     "tertiary", "tertiary_link", "secondary", "secondary_link",
+                     "primary", "primary_link", "service", "road"],
+        "paved_only": True,
+    },
+    "securise": {
+        "label": "Sécurisé (pistes cyclables et rues calmes, grands axes évités)",
         "highways": ["cycleway", "living_street", "residential", "unclassified",
                      "tertiary", "tertiary_link", "secondary", "secondary_link",
                      "primary", "primary_link", "service", "road"],
@@ -132,7 +178,7 @@ def build_overpass_query(south, west, north, east, profile="route", timeout=30):
     )
 
 
-def _graph_from_overpass(data):
+def _graph_from_overpass(data, profile="route"):
     remark = data.get("remark", "")
     if "runtime error" in remark.lower() or "timed out" in remark.lower():
         # Réponse tronquée : un réseau incomplet donnerait un parcours faux.
@@ -155,7 +201,7 @@ def _graph_from_overpass(data):
     G = nx.Graph()
     for w in ways:
         tags = w.get("tags") or {}
-        mult = HIGHWAY_COST.get(tags.get("highway", ""), 1.2)
+        mult = way_cost(tags, profile)
         nds = w.get("nodes", [])
         for a, b in zip(nds[:-1], nds[1:]):
             if a == b or a not in coords or b not in coords:
@@ -167,10 +213,13 @@ def _graph_from_overpass(data):
             if b not in G:
                 G.add_node(b, y=lb, x=lob)
             length = _haversine_m(la, loa, lb, lob)
+            hw = sys.intern(tags.get("highway", ""))
             if G.has_edge(a, b):
-                G[a][b]["mult"] = min(G[a][b]["mult"], mult)
+                if mult < G[a][b]["mult"]:
+                    G[a][b]["mult"] = mult
+                    G[a][b]["hw"] = hw
             else:
-                G.add_edge(a, b, length=length, mult=mult)
+                G.add_edge(a, b, length=length, mult=mult, hw=hw)
 
     if G.number_of_nodes() < 30:
         raise RouteError("Presque aucune route utilisable autour de ce point pour ce profil.")
@@ -234,7 +283,7 @@ def fetch_osm_graph(lat, lon, radius_m, profile="route", budget_s=60.0):
                     continue
                 data = resp.json()
                 del resp
-                G = _graph_from_overpass(data)
+                G = _graph_from_overpass(data, profile)
                 del data
                 gc.collect()
                 if len(_CACHE) >= _CACHE_MAX:
@@ -493,6 +542,22 @@ def _remove_thin_excursions(G, route, xy, close_m=120.0, max_len_m=8000.0, min_l
     return route
 
 
+BIG_ROADS = {"primary", "primary_link", "secondary", "secondary_link"}
+
+
+def _big_roads_pct(G, route):
+    """Part du parcours (en longueur) sur des grands axes (routes primaires/secondaires)."""
+    tot = big = 0.0
+    for u, v in zip(route[:-1], route[1:]):
+        if u == v or not G.has_edge(u, v):
+            continue
+        d = G[u][v]
+        tot += d["length"]
+        if d.get("hw") in BIG_ROADS:
+            big += d["length"]
+    return 100.0 * big / tot if tot else 0.0
+
+
 def _samples(line, step=20.0):
     k = max(2, int(line.length // step) + 1)
     return shapely.line_interpolate_point(line, np.linspace(0.0, line.length, k))
@@ -500,7 +565,7 @@ def _samples(line, step=20.0):
 
 def route_shape_on_roads(G, shape_pts_m, lat0, lon0,
                          anchor_spacing_m=90.0, stray_m=25.0, max_snap_m=150.0,
-                         prune_saving_m=40.0, simple_shape=False):
+                         prune_saving_m=40.0, simple_shape=False, closed=True):
     """Trace la forme sur le réseau G.
 
     Idée : chaque tronçon a un coût = longueur x type de voie x (1 + (écart/25m)²),
@@ -517,7 +582,7 @@ def route_shape_on_roads(G, shape_pts_m, lat0, lon0,
     py = np.array([(G.nodes[n]["y"] - lat0) * M_PER_DEG for n in nodes])
 
     pts = [tuple(p) for p in shape_pts_m]
-    if math.hypot(pts[0][0] - pts[-1][0], pts[0][1] - pts[-1][1]) > 1.0:
+    if closed and math.hypot(pts[0][0] - pts[-1][0], pts[0][1] - pts[-1][1]) > 1.0:
         pts.append(pts[0])
     line = LineString(pts)
 
@@ -620,7 +685,7 @@ def route_shape_on_roads(G, shape_pts_m, lat0, lon0,
     route = [sequence[0]]
     unreachable = 0
     targets = sequence[1:]
-    if sequence[0] != sequence[-1]:
+    if closed and sequence[0] != sequence[-1]:
         targets = targets + [sequence[0]]          # la boucle se referme toujours
     for b in targets:
         a = route[-1]
@@ -695,6 +760,7 @@ def route_shape_on_roads(G, shape_pts_m, lat0, lon0,
         "max_dev_m": round(float(np.max(dev)), 1),
         "coverage_pct": round(coverage, 1),
         "key_dev_m": round(key_dev, 1),
+        "big_roads_pct": round(_big_roads_pct(G, route), 1),
         "rel_dev": round(rel, 4),
         "key_rel": round(key_rel, 4),
         "cov_wide": round(cov_wide, 1),
